@@ -1,0 +1,30 @@
+# Equirectangular model for RICOH THETA S
+
+#==============#
+# Camera Model #
+#==============#
+
+Camera.name: "GOPPRO_MAX"
+Camera.setup: "monocular"
+Camera.model: "equirectangular"
+
+Camera.fps: 29.97
+Camera.cols: 5760
+Camera.rows: 2880
+
+Camera.color_order: "RGB"
+
+#================#
+# ORB Parameters #
+#================#
+
+Feature.max_num_keypoints: 5000
+Feature.scale_factor: 1.2s
+Feature.num_levels: 7
+Feature.ini_fast_threshold: 20
+Feature.min_fast_threshold: 1
+Feature.mask_rectangles:
+  - [0.0, 1.0, 0.0, 0.1]
+  - [0.0, 1.0, 0.84, 1.0]
+  - [0.0, 0.2, 0.7, 1.0]
+  - [0.8, 1.0, 0.7, 1.0]
