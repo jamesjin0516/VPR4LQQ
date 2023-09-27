@@ -125,7 +125,7 @@
         <source src="static/videos/ICRA2024.mp4"
         type="video/mp4">
       </video>
-      <h2 class="subtitle has-text-centered">
+      <h2 class="subtitle has-text-justified">
         <b>VPR4LQQ:</b> We introduce a distillation neural network approach, enhancing the performance of compressed images in Visual Place Recognition. Using the Pitts250k dataset and our custom indoor dataset, we demonstrate the efficacy of our model, especially when combined with the Inter-Channel Knowledge Distillation (ICKD) loss. The video showcases a comparative animation, highlighting our model's superiority over the NetVLAD baseline in various scenarios.
       </h2>
     </div>
@@ -182,40 +182,122 @@ We validate our approach using the both Pittsburgh 250k dataset and our own indo
 
 
 
+<!-- Method description -->
+<section class="section hero is-light">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Method</h2>
+        <div class="content has-text-justified">
+          <p>
+            Our approach to Visual Place Recognition (VPR) leverages knowledge distillation to make a student network mimic a sophisticated teacher network. Rooted in the NetVLAD algorithm, we employ a dual-branch distillation model comprising a student and teacher branch, both utilizing the VGG-16 architecture. The student branch processes low-quality images, while the teacher works with high-quality images. To assess the student's performance, we introduced three loss functions: Inter-channel Correlation Knowledge Distillation (ICKD) Loss, Mean Squared Error (MSE) Loss, and a Weakly Supervised Triplet Ranking Loss. However, our experiments indicated that a composite loss, excluding the triplet loss, yielded the best results. The final loss function is a weighted sum of ICKD and MSE losses.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End method description -->
+
+<!-- Method Image -->
+<section class="hero is-small">
+  <div class="hero-body">
+    <img src="static/images/Method.png" alt="Method Illustration">
+  </div>
+</div>
+</div>
+</section>
+<!-- End Method Image -->
+
+<!-- Experiment and Result -->
+<section class="section hero is-light">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Experiment and Result</h2>
+        <div class="content has-text-justified">
+          <p>
+            We validated our distillation model using the Pitts250k dataset, a cornerstone in VPR research, and our custom dataset curated from the 6th floor of the Lighthouse Guild. The Pitts250k dataset was segmented for training, database, and validation purposes and underwent downsampling to distinct resolutions. Our dataset emphasizes the effects of video bitrate and resolution, involving extensive video processing, including downsampling and quantization. Post-processing, frames were extracted, and ground truth locations were ascertained using a combination of OpenVSLAM and the Aligner GUI.
+          </p>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<!-- End Experiment and Result -->
+
+
+<!-- Result -->
+<section class="hero is-small">
+  <div class="hero-body">
+    <img src="static/images/Figure4.JPEG" alt="Result figure">
+  </div>
+</div>
+</div>
+</section>
+<!-- End Result -->
+
+<!-- Experiment and Result -->
+<section class="section hero is-light">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <div class="content has-text-justified">
+          <p>
+            The following videos and figures presents heatmaps indicating the regions of interest for four models trained using different loss settings. Observably, our model (MSE+ICKD loss) predominantly concentrates on critical regions while overlooking areas prone to visual aliasing. This focused attention might underpin the superior performance exhibited by this particular loss setting.
+          </p>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<!-- End Experiment and Result -->
 
 
 <!-- Video carousel -->
-<!-- <section class="hero is-small">
+<section class="hero is-small">
   <div class="hero-body">
     <div class="container">
-      <h2 class="title is-3">Another Carousel</h2>
+
       <div id="results-carousel" class="carousel results-carousel">
         <div class="item item-video1">
           <video poster="" id="video1" autoplay controls muted loop height="100%"> -->
             <!-- Your video file here -->
-            <!-- <source src="static/videos/carousel1.mp4"
+            <source src="static/videos/000.mp4"
             type="video/mp4">
           </video>
         </div>
         <div class="item item-video2">
-          <video poster="" id="video2" autoplay controls muted loop height="100%"> -->
+          <video poster="" id="video2" autoplay controls muted loop height="100%">
             <!-- Your video file here -->
-            <!-- <source src="static/videos/carousel2.mp4"
+            <source src="static/videos/120.mp4"
             type="video/mp4">
           </video>
         </div>
         <div class="item item-video3">
-          <video poster="" id="video3" autoplay controls muted loop height="100%">\ -->
+          <video poster="" id="video3" autoplay controls muted loop height="100%">\
             <!-- Your video file here -->
-            <!-- <source src="static/videos/carousel3.mp4"
+            <source src="static/videos/240.mp4"
             type="video/mp4">
           </video>
         </div>
       </div>
     </div>
   </div>
-</section> -->
+</section>
 <!-- End video carousel -->
+
+<!-- Attention Map -->
+<section class="hero is-small">
+  <div class="hero-body">
+    <img src="static/images/Figure6.png" alt="Attention Map">
+  </div>
+</div>
+</div>
+</section>
+<!-- End Attention Map -->
+
+
 
 
 
