@@ -10,10 +10,10 @@ data:
     YAW:
       num: 18
     SHAPE:
-      # height: 810
-      # width: 1440
-      height: 540
-      width: 960
+      height: 810
+      width: 1440
+      # height: 540
+      # width: 960
   compression:
     prepocess: true
     QP:
@@ -21,9 +21,12 @@ data:
       max: 50
       interval: 3
     resolution:
-      203p: [203,360]
-      405p: [405,720]
-      810p: [810,1440]
+      135p: [135,240]
+      270p: [270,480]
+      540p: [540,960]
+      # 203p: [203,360]
+      # 405p: [405,720]
+      # 810p: [810,1440]
 
 train:
   video:

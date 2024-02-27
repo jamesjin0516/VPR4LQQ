@@ -265,7 +265,7 @@ class VPR():
                 bar+=f' Lr {lr:.4e}'
                 pbar.set_description(bar, refresh=False)
                 pbar.update(1)
-                del images_high,images_low,Loss
+                del images_high,images_low,Loss, features_low, vectors_low, features_high, vectors_high
                 torch.cuda.empty_cache()
                 
         self.writer.add_scalar('Train/Loss', Loss_dict['loss']/self.train_data_set.__len__(), epoch)
@@ -322,6 +322,7 @@ class VPR():
 
         random.seed(10)
 
+        # Choosing a fixed number of images from each query dataset is currently unused
         sample_size=1000
         len_init=self.query_data_sets[0].__len__()
         indices=[random.sample(list(range(len_init)),sample_size)]
@@ -329,9 +330,10 @@ class VPR():
             len_current=len_init+d.__len__()
             indices.append(random.sample(list(range(len_init,len_current)),sample_size))
             len_init=len_current
-            
+        
+        # All query images are evaluated for VPR recall
         query_batch=20
-        batch_sampler=BatchSampler(indices,query_batch)
+        batch_sampler=BatchSampler([list(range(len(self.query_data_set)))], query_batch)
         data_loader=DataLoader(self.query_data_set, num_workers=self.config['train']['num_worker'],pin_memory=True,batch_sampler=batch_sampler)
 
         evaluation_distill=torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))

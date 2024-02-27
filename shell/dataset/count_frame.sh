@@ -1,9 +1,9 @@
 #!/bin/bash
-video=ICT1_3
-dir=/mnt/data/Resolution_Agnostic_VPR/logs/unav/$video/000
+video=Langone9_1
+dir=/mnt/data/VPR4LQQ/logs/unav/$video/000
 total_count=0
-res_list=''203p' '405p' '810p''
-# res_list=''135p' '270p' '540p''
+# res_list=''203p' '405p' '810p''
+res_list=''135p' '270p' '540p''
 
 echo $video
 

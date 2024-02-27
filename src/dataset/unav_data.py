@@ -1,6 +1,6 @@
 import sys
 from os.path import join,exists,basename
-from os import listdir
+from os import listdir,remove
 sys.path.append(join(sys.path[0],'..'))
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -45,30 +45,38 @@ def extract_descriptors(image_folder,global_extractor):
             yaw_list=listdir(pitch_folder)
             for ind,yaw in enumerate(sorted(yaw_list)):
                 images_root=join(pitch_folder,yaw,'images')
-                resolution_list=sorted(listdir(images_root))
-                images_high_path=join(images_root,resolution_list[-1],'raw')
-                image_high_names = set(sorted(listdir(images_high_path)))
-                for i,im in tqdm(enumerate(image_high_names),desc=f'{str(ind).zfill(2)}/{len(yaw_list)}',total=len(image_high_names)):
-                    if i%20==0 or i==len(image_high_names)-1:
-                        if i>0:
-                            image_=torch.stack(images_list)
-                            feature=global_extractor.encoder(image_)
-                            vector=global_extractor.pool(feature).detach().cpu()
-                            for name, descriptor in zip(images_name,vector):
-                                grp.create_dataset(name, data=descriptor)
-                            index+=vector.size(0)
-                            del image_,feature,vector
-                            torch.cuda.empty_cache()
-                        images_list=[]
-                        images_name=[]
-                    image=input_transform()(Image.open(join(images_high_path,im)))
-                    images_list.append(image.to(device))
-                    images_name.append(f'{pitch}+{yaw}+{im}')
+                if exists(images_root):
+                    resolution_list=sorted(listdir(images_root))
+                    images_high_path=join(images_root,resolution_list[-1],'raw')
+                    image_high_names = set(sorted(listdir(images_high_path)))
+                    for i,im in tqdm(enumerate(image_high_names),desc=f'{str(ind).zfill(2)}/{len(yaw_list)}',total=len(image_high_names)):
+                        if i%20==0 or i==len(image_high_names)-1:
+                            if i>0:
+                                image_=torch.stack(images_list)
+                                feature=global_extractor.encoder(image_)
+                                vector=global_extractor.pool(feature).detach().cpu()
+                                for name, descriptor in zip(images_name,vector):
+                                    grp.create_dataset(name, data=descriptor)
+                                index+=vector.size(0)
+                                del image_,feature,vector
+                                torch.cuda.empty_cache()
+                            images_list=[]
+                            images_name=[]
+                        image=input_transform()(Image.open(join(images_high_path,im)))
+                        images_list.append(image.to(device))
+                        images_name.append(f'{pitch}+{yaw}+{im}')
+                else:
+                    if exists(hfile_path):
+                        hfile.close()
+                        remove(hfile_path)
+                    break
         hfile.close()
 
 def find_neighbors(image_folder,gt,scale,global_descriptor_dim,posDistThr,nonTrivPosDistSqThr,nPosSample):
 
     pitch_list=listdir(image_folder)
+    if 'global_descriptor.h5' not in pitch_list:
+        return
     pitch_list.remove('global_descriptor.h5')
     for pitch in sorted(pitch_list):
         pitch_folder=join(image_folder,pitch)
@@ -84,6 +92,7 @@ def find_neighbors(image_folder,gt,scale,global_descriptor_dim,posDistThr,nonTri
         names.append(k)
         descriptors[i,:]=v.__array__()
         i+=1
+
     descriptors=torch.from_numpy(descriptors)
     sim = torch.einsum('id,jd->ij', descriptors, descriptors).float()
     ind = np.diag_indices(sim.shape[0])
@@ -100,6 +109,7 @@ def find_neighbors(image_folder,gt,scale,global_descriptor_dim,posDistThr,nonTri
 
     locations=np.array(locations)*scale
     knn = NearestNeighbors(n_jobs=1)
+
     knn.fit(locations)
     nontrivial_positives = list(knn.radius_neighbors(locations,
             radius=nonTrivPosDistSqThr, 
@@ -127,7 +137,7 @@ def find_neighbors(image_folder,gt,scale,global_descriptor_dim,posDistThr,nonTri
                 for neg in negtives_:
                     negtives.append(f'{pitch}+{yaw}+{neg}.png')
 
-        negtives=random.sample(negtives,100)
+        negtives=random.sample(negtives,min(len(negtives),100))
 
         feature_closed=topk[i]
         positives=[]
@@ -165,7 +175,17 @@ def main(configs):
     posDistThr=configs['train']['triplet_loss']['posDistThr']
     nonTrivPosDistSqThr=configs['train']['triplet_loss']['nonTrivPosDistSqThr']
     nPosSample=configs['train']['triplet_loss']['nPosSample']
-    image_folders=['Lighthouse6_0','Lighthouse6_1','Lighthouse6_2','Lighthouse6_3','Lighthouse6_4','Lighthouse6_5','Lighthouse6_6','Lighthouse6_7','Tandon4_0']
+
+    folders_=[]
+    for folder in folders_:
+        image_folders.remove(folder)
+    # image_folders.remove('MLC2_2')
+
+    ######
+    image_folder = ['370Jay9_1', 'Langone10_0', 'Langone10_1', 'Langone11_0', 'Langone11_1', 'Langone12_0', 'Langone12_1', \
+                    'Langone17_0', 'Langone17_1', 'Langone2_0', 'Langone2_1', 'Langone5_0', 'Langone5_1', 'Langone6_0', 'Langone6_1', \
+                    'Langone8_0', 'Langone8_1', 'Langone9_0', 'Langone9_1', 'Lighthouse6_6']
+
     for image_folder in image_folders:
         print(f'======================Processing {image_folder}')
         building=image_folder.split('_')[0]
@@ -178,7 +198,7 @@ def main(configs):
 if __name__=='__main__':
     device='cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='/home/unav/Desktop/Resolution_Agnostic_VPR/configs/trainer.yaml')
+    parser.add_argument('-c', '--config', type=str, default='/home/unav/Desktop/VPR4LQQ/configs/trainer.yaml')
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)

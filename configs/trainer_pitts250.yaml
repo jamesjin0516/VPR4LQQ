@@ -1,4 +1,4 @@
-root: '/mnt/data/VPR4LQQ'
+root: '/scratch/gj2148/VPR4LQQ'
 
 data:
   rate: 30
@@ -26,7 +26,7 @@ train:
   video:
     sequence_num: 3
   start_epoch: 0
-  nepoch: 10
+  nepoch: 6
   evalEvery: 1
   batch_size: 15
   num_worker: 5
@@ -46,7 +46,7 @@ train:
     dimension: 512
   loss:
     distill: true
-    vlad: true
+    vlad: false
     triplet: true
   triplet_loss:
     posDistThr: 30
