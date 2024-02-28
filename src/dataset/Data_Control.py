@@ -125,6 +125,10 @@ class Pitts250k_dataset(Dataset):
         print(images_high.shape, images_low.shape, images_low_path, locations.shape)
         breakpoint()
         return [images_high,images_low,images_low_path,locations]
+        # images_high: (7, 3, 480, 640)
+        # images_low: (7, 3, 180, 240)
+        # images_low_path: 7 (list)
+        # locations: (7, 2)
     
     def input_transform(self):
         return transforms.Compose([
