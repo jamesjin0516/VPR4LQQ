@@ -15,84 +15,6 @@ from tqdm import tqdm
 import h5py
 import random
 
-def chunk(indices, size):
-    return torch.split(torch.tensor(indices),size)
-
-class BatchSampler(Sampler):
-    def __init__(self, data_indices, batch_size):
-        self.data_indices=data_indices
-        self.batch_size=batch_size
-    
-    def __iter__(self):
-        data_batches=[]
-        for d in self.data_indices:
-            random.shuffle(d)
-            data_batches.append(chunk(d,self.batch_size))
-        d=data_batches[0]
-        for dd in data_batches[1:]:
-            d+=dd
-        all_batches=list(d)
-        all_batches=[batch.tolist() for batch in all_batches]
-        random.shuffle(all_batches)
-        return iter(all_batches)
-    
-    def __len__(self):
-        return sum([len(d) for d in self.data_indices])/self.batch_size
-    
-class UNav_dataset(Dataset):
-    device='cuda' if torch.cuda.is_available() else 'cpu'
-    def __init__(self,image_folder,resolution,qp,pitch_list,yaw_list,**config):
-        self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample']
-        num=0
-        for pitch in pitch_list:
-            for yaw in yaw_list:
-                neighbor_folder=join(image_folder,pitch,yaw,'neighbor',resolution,str(qp))
-                num+=len(listdir(neighbor_folder))
-        self.data=np.empty(num,dtype='U100')
-        index=0
-        for pitch in pitch_list:
-            for yaw in yaw_list:
-                neighbor_folder=join(image_folder,pitch,yaw,'neighbor',resolution,str(qp))
-                datas=listdir(neighbor_folder)
-                for data in datas:
-                    self.data[index]=join(neighbor_folder,data)
-                    index+=1
-        
-    def __getitem__(self, index):
-        with open(self.data[index],'r') as f:
-            data=json.load(f)
-        locs=data['locs']
-        data=data['paths']
-        images_high_dict=data['high']
-        image_high_path=images_high_dict['path']
-        positives_high=images_high_dict['positives']
-        negtives_high=images_high_dict['negtives']
-
-        images_low_dict=data['low']
-        image_low_path=images_low_dict['path']
-        positives_low=images_low_dict['positives']
-        negtives_low=images_low_dict['negtives']
-
-        images_low_path,images_high,images_low=[],[],[]
-        for im in [image_high_path]+positives_high+negtives_high:
-            images_high.append(self.input_transform()(Image.open(im)))
-        images_high=torch.stack(images_high)
-        for im in [image_low_path]+positives_low+negtives_low:
-            images_low_path.append(im)
-            images_low.append(self.input_transform()(Image.open(im)))
-        images_low=torch.stack(images_low)
-        locations=torch.tensor(locs)
-        return [images_high,images_low,images_low_path,locations]
-    
-    def input_transform(self):
-        return transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                   std=[0.229, 0.224, 0.225]),
-        ])
-    
-    def __len__(self):
-        return len(self.data)
 
 class Pitts250k_dataset(Dataset):
     device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -100,14 +22,12 @@ class Pitts250k_dataset(Dataset):
         self.gt=gt # (1000, 2)
         self.id=image_id # 1000
         self.neighbor_file=neighbor_file
-        self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample'] # 1, 5
+        self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample']
         self.high_resolution='raw'
-        self.resolution=resolution # 180p
+        self.resolution=resolution
         self.__prepare_data(image_folder)
         
     def __getitem__(self, index):
-        # concat image, postive image, and negative images
-        print('starting to get item from Pitts250k_dataset')
         high_image_set,low_image_set=self.data[index]
         image_high_path,positives_high,negtives_high=high_image_set
         image_low_path,positives_low,negtives_low=low_image_set
@@ -118,12 +38,10 @@ class Pitts250k_dataset(Dataset):
         for im in [image_low_path]+positives_low+negtives_low:
             images_low_path.append(im)
             images_low.append(self.input_transform()(Image.open(im)))
-            locations.append(self.gt[self.id.index(int(basename(im).replace('.jpg','')))]) # gt corresponding to the image path
+            locations.append(self.gt[self.id.index(int(basename(im).replace('.jpg','')))])
         images_low=torch.stack(images_low)
         locations=np.array(locations)
         locations=torch.tensor(locations)
-        print(images_high.shape, images_low.shape, images_low_path, locations.shape)
-        breakpoint()
         return [images_high,images_low,images_low_path,locations]
     
     def input_transform(self):
@@ -146,21 +64,20 @@ class Pitts250k_dataset(Dataset):
             yaw_list=listdir(pitch_folder)
             for yaw in sorted(yaw_list):
                 images_root=join(pitch_folder,yaw)
-                images_low_path=join(images_root,self.resolution) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/180p'
-                images_high_path=join(images_root,'raw') # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw'
+                images_low_path=join(images_root,self.resolution)
+                images_high_path=join(images_root,'raw')
 
                 images_low=listdir(images_low_path)
                 for image in images_low:
                     name=f'{pitch}+{yaw}+{image}'
                     if name in self.neighbor_file:
-                        image_high_path=join(images_high_path,image) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
+                        image_high_path=join(images_high_path,image)
                         image_low_path=join(images_low_path,image)
                         positives_high,negtives_high=[],[]
                         positives_low,negtives_low=[],[]
                         ind=0
-                        # key: how to get the neighbor thing in the new dataset
-                        positives_pool=self.neighbor_file[name]['positives'][:] #(20,)
-                        negtives_pool=self.neighbor_file[name]['negtives'][:] #(100,)
+                        positives_pool=self.neighbor_file[name]['positives'][:]
+                        negtives_pool=self.neighbor_file[name]['negtives'][:]
                         while len(positives_high)<self.nPosSample:
                             pitch_,yaw_,name_=positives_pool[ind].decode('utf-8').split('+')
                             positive_high=join(image_folder,pitch_,yaw_,self.high_resolution,name_)
@@ -184,11 +101,6 @@ class Pitts250k_dataset(Dataset):
                                 break
                         if len(positives_high)==self.nPosSample and len(negtives_high)==self.nNegSample:
                             self.data.append([[image_high_path,positives_high,negtives_high],[image_low_path,positives_low,negtives_low]])
-                        # image_high_path: '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
-                        # positives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006419.jpg']
-                        # negtives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/210/raw/006352.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/240/raw/003258.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/300/raw/008770.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/180/raw/006603.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/060/raw/008609.jpg']
-                        # same pattern for low
-                        
 
 def load_pitts250k_data(data,config):
     image_folder=data['image_folder']

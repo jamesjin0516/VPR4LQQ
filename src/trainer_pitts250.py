@@ -542,7 +542,7 @@ def main(configs):
         vpr.get_cluster()
 
     for epoch in range(vpr.start_epoch,vpr.start_epoch+configs['train']['nepoch']):
-        vpr.train_student(epoch)
+        # vpr.train_student(epoch)
         vpr.validation(epoch)
     vpr.writer.close()
     

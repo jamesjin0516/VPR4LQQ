@@ -1,4 +1,4 @@
-root: '/scratch/gj2148/VPR4LQQ'
+root: '/scratch/lg3490/VPR4LQQ'
 
 data:
   rate: 30
@@ -29,7 +29,7 @@ train:
   nepoch: 6
   evalEvery: 1
   batch_size: 15
-  num_worker: 5
+  num_worker: 0
   num_cluster: 64
   cacheRefreshRate: 1000
   nGPU: 2

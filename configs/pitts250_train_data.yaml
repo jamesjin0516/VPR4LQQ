@@ -1,0 +1,13 @@
+name: pitts250k
+
+train:
+  - train
+
+valid:
+  - valid
+
+database:
+  - database
+
+query:
+  - query
