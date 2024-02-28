@@ -1,0 +1,79 @@
+root: '/scratch/zl3493/VPR4LQQ'
+
+data:
+  name: "st_lucia"
+  rate: 30
+  slice:
+    FOV: 90
+    PITCH:
+      num: 1
+      range: 20
+    YAW:
+      num: 18
+    SHAPE:
+      # height: 810
+      # width: 1440
+      height: 540
+      width: 960
+  compression:
+    prepocess: true
+    resolution:
+      180p: [180,240]
+      240p: [240,320]
+      360p: [360,480]
+      480p: [480,640]
+
+train:
+  video:
+    sequence_num: 3
+  start_epoch: 0
+  nepoch: 6
+  evalEvery: 1
+  batch_size: 15
+  num_worker: 5
+  num_cluster: 64
+  cacheRefreshRate: 1000
+  nGPU: 2
+  resume: true
+  lr: 0.000001
+  lr_decay: 0.000000000002
+  exponential_gamma: 0.99999
+  data:
+    resolution: 180p
+    qp: -1
+  cluster:
+    descriptor_num: 500000
+    descriptor_per_image: 100
+    dimension: 512
+  loss:
+    distill: true
+    vlad: false
+    triplet: true
+  triplet_loss:
+    posDistThr: 30
+    nonTrivPosDistSqThr: 20
+    nPosSample: 1
+    nNegSample: 5
+    margin: 0.2
+
+vpr:
+  topk:
+    - 1
+    - 2
+    - 5
+    - 10
+    - 15
+    - 20
+    - 25
+  threshold:
+    - 25
+  global_extractor:
+    netvlad:
+      use: true
+      ckpt_path:  'parameters/netvlad/paper/checkpoints'
+      arch: 'vgg16'
+      num_clusters: 64
+      pooling:  'netvlad'
+      vladv2: false
+      nocuda: false
+  local_feature: 'superpoint'
