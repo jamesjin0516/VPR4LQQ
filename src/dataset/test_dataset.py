@@ -36,7 +36,7 @@ def read_coordinate(image_name):
 
 class TestDataset(Dataset):
 
-    def __init__(self, image_folder, resolution, **config):
+    def __init__(self, image_folder, resolution, test_data_config, train_loss_config):
         """
         - image_folder: path to query images folder (one level above individual resolutions folder)
         - resolution: specifies the resolution folder to choose for query images
@@ -47,8 +47,8 @@ class TestDataset(Dataset):
                                    std=[0.229, 0.224, 0.225]),
         ])
         self.image_folder = image_folder
-        self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample'] # 1, 5
-        self.resolution = resolution
+        self.resolution = test_data_config['resolution'][resolution]
+        self.nPosSample,self.nNegSample = train_loss_config['nPosSample'],train_loss_config['nNegSample'] # 1, 5
         self.neighbor_file = h5py.File(join(image_folder, 'neighbors.h5'), 'r')
         self.__prepare_data(image_folder)
 
@@ -93,7 +93,7 @@ class TestDataset(Dataset):
             if image in self.neighbor_file:
                 image_high_path=join(image_folder,image)
                 image_high = self.input_transform()(Image.open(image_high_path))
-                image_low = self.input_transform()(Image.open(image_high_path).resize(180, 240))
+                image_low = self.input_transform()(Image.open(image_high_path).resize(self.resolution[0], self.resolution[1]))
                 
                 positives_high,negatives_high=[],[]
                 positives_low,negatives_low=[],[]
@@ -109,7 +109,7 @@ class TestDataset(Dataset):
                     positive_high_path=join(image_folder, name)
                     if exists(positive_high_path):
                         positive_high = self.input_transform()(Image.open(positive_high_path))
-                        positive_low = self.input_transform()(Image.open(positive_high_path).resize(180, 240))
+                        positive_low = self.input_transform()(Image.open(positive_high_path).resize(self.resolution[0], self.resolution[1]))
                         positives_high.append(positive_high)
                         positives_low.append(positive_low)
                         paths.append(positive_high_path)
@@ -124,7 +124,7 @@ class TestDataset(Dataset):
                     negative_high_path=join(image_folder, name)
                     if exists(negative_high_path):
                         negative_high = self.input_transform()(Image.open(negative_high_path))
-                        negative_low = self.input_transform()(Image.open(negative_high_path).resize(180, 240))
+                        negative_low = self.input_transform()(Image.open(negative_high_path).resize(self.resolution[0], self.resolution[1]))
                         negatives_high.append(negative_high)
                         negatives_low.append(negative_low)
                         paths.append(negative_high_path)

@@ -1,4 +1,4 @@
-root: '/scratch/gj2148/VPR4LQQ'
+root: '/scratch/lg3490/VPR4LQQ'
 
 model_IO:
   weights_path: parameters/RA_VPR

@@ -8,3 +8,4 @@ script=$work_path/src/trainer_pitts250.py
 CUDA_VISIBLE_DEVICES=0 python $script -c $work_path/configs/trainer_pitts250.yaml
 
 # python src/trainer_pitts250.py -c configs/trainer_pitts250.yaml
+# python src/test_trained_model.py -c configs/test_trained_model.yaml

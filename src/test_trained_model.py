@@ -29,7 +29,7 @@ class VPRTester:
         self.database_images_set = self.load_database_images(data_folders)
         assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
 
-        # self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"])
+        self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"], configs['test_data'], configs['train_conf']['triplet_loss'])
 
         # still have to set up tensorboard writer, using training_settings (loss information, training dataset) and root
 
@@ -138,20 +138,19 @@ def main(configs):
         "database": join(root, test_data_dir_name, name, database_folder),
         "query": join(root, test_data_dir_name, name, query_folder)
     }
-
-    vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train']['data'])
+    vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf']['data'])
 
     for iter_num in configs["num_repetitions"]:
         vpr.validation(iter_num)
     vpr.writer.close()
     
 if __name__=='__main__':
-    import debugpy
-    debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
+    # import debugpy
+    # debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
 
-    # Wait for the debugger to attach
-    print("Waiting for debugger to attach...")
-    debugpy.wait_for_client()
+    # # Wait for the debugger to attach
+    # print("Waiting for debugger to attach...")
+    # debugpy.wait_for_client()
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='/scratch/zl3493/VPR4LQQ/configs/test_st_lucia.yaml')
