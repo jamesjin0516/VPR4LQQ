@@ -1,40 +1,19 @@
-root: '/scratch/zl3493/VPR4LQQ'
+root: '/scratch/gj2148/VPR4LQQ'
 
-data:
+model_IO:
+  weights_path: parameters/RA_VPR
+  logs_path: logs/tensorboard_logs
+
+test_data:
   name: "st_lucia"
-  rate: 30
-  slice:
-    FOV: 90
-    PITCH:
-      num: 1
-      range: 20
-    YAW:
-      num: 18
-    SHAPE:
-      # height: 810
-      # width: 1440
-      height: 540
-      width: 960
-  compression:
-    prepocess: true
-    resolution:
-      180p: [180,240]
-      240p: [240,320]
-      360p: [360,480]
-      480p: [480,640]
+  resolution:
+    180p: [180,240]
+    240p: [240,320]
+    360p: [360,480]
+    480p: [480,640]
 
-train:
-  video:
-    sequence_num: 3
-  start_epoch: 0
-  nepoch: 6
-  evalEvery: 1
-  batch_size: 15
-  num_worker: 5
+train_conf:
   num_cluster: 64
-  cacheRefreshRate: 1000
-  nGPU: 2
-  resume: true
   lr: 0.000001
   lr_decay: 0.000000000002
   exponential_gamma: 0.99999
@@ -76,4 +55,3 @@ vpr:
       pooling:  'netvlad'
       vladv2: false
       nocuda: false
-  local_feature: 'superpoint'

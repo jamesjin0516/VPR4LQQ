@@ -1,7 +1,0 @@
-name: st_lucia
-
-database:
-  - database
-
-query:
-  - query

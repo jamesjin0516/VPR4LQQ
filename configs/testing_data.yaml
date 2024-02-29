@@ -1,0 +1,9 @@
+# Database components relative to root. Loaded with test_trained_model.yaml into testing_data.py and test_trained_model.py
+
+testsets_path: logs
+
+st_lucia:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg

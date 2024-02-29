@@ -1,7 +1,7 @@
 # Import necessary libraries
 import sys
-from os.path import join, exists, basename
-from os import listdir, makedirs
+from os.path import join, exists, basename, splitext
+from os import listdir, makedirs, rename
 # Append the parent directory to sys.path to allow importing from there
 sys.path.append(join(sys.path[0], '..'))
 import numpy as np
@@ -60,7 +60,7 @@ def extract_descriptors(image_folder, global_extractor):
         hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
-def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample, query=False):
+def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
     hfile_path = join(image_folder, 'global_descriptor.h5')
     hfile = h5py.File(hfile_path, 'r')
     
@@ -68,11 +68,10 @@ def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr,
     descriptors = np.empty((len(hfile[basename(image_folder)]), global_descriptor_dim))
     locations = np.empty((len(hfile[basename(image_folder)]), 2))
 
-    for i, (k, v) in tqdm(enumerate(hfile[basename(image_folder)].items()), desc='load data', total=len(hfile[basename(image_folder)])):
-        names.append(k)
-        name = k.split('@')[7] # use pano_id as name
-        locations[i, :] = gt[name_id.index(name)]
-        descriptors[i, :] = v.__array__()
+    for i, (img_name, img_feat) in tqdm(enumerate(hfile[basename(image_folder)].items()), desc='load data', total=len(hfile[basename(image_folder)])):
+        names.append(img_name)
+        locations[i, :] = gt[name_id.index(img_name)]
+        descriptors[i, :] = img_feat.__array__()
 
     knn = NearestNeighbors(n_jobs=1)
     knn.fit(gt)
@@ -112,17 +111,17 @@ def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr,
             sim = sim_batch[i]
             feature_closed = torch.topk(sim, descriptors.size(0), dim=0).indices.numpy()
             
-            key = name.split('@')[7]
+            key = splitext(name)[0]
             physical_closed = set([str(name_id[ind]).zfill(6) for ind in nontrivial_positives[name_id.index(key)]])
             
             negtives_ = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(key)]]
-            negtives = [f'{neg}.jpg' for neg in negtives_]
+            negtives = [f'{neg}.{img_ext}' for neg in negtives_]
             negtives = random.sample(negtives, 100)
 
             positives = []
             ind = 0
             while len(positives) < nPosSample * 20:
-                key = names[feature_closed[ind]].replace('.jpg', '').split('@')[7]
+                key = splitext(names[feature_closed[ind]])[0]    # removes the extension
                 if key in physical_closed:
                     positives.append(names[feature_closed[ind]])
                 ind += 1
@@ -137,39 +136,36 @@ def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr,
     hfile.close()
 
 # Function to process data, organizing it into the required structure for training and evaluation
-def process_data(root, input_path, output_dir_name):
-    output_folder = join(root, 'logs', output_dir_name)
-    types = ['database', 'queries']
-    resolutions = {'raw': [640, 480], '180p': [240, 180], '360p': [480, 360], '240p': [320, 240]}
-    for t in types:
-        outf = join(output_folder, t)
-        for k in list(resolutions.keys()):
-            image_folder = join(outf, k)
+def process_data(database_path, query_path, resolutions, img_ext):
+    split_types = {"database": database_path, "query": query_path}
+    for split_type, split_path in split_types.items():
+        # Move any unclassifed images under database or query to the "raw" resolution folder
+        images = [image for image in listdir(split_path) if splitext(image)[1] == img_ext]
+        raw_folder = join(split_path, "raw")
+        if not exists(raw_folder):
+            makedirs(raw_folder)
+        for image in images:
+            rename(join(split_path, image), join(raw_folder, image))
+        # Ensure all other resolutions have a cooresponding folder
+        for res_name in list(resolutions.keys()):
+            image_folder = join(split_path, res_name)
             if not exists(image_folder):
                 makedirs(image_folder)
-                
-    # resolutions.pop('raw') # don't pop; copy over raw images to the corresponding raw folders
-    
-    for t in types:
-        current_input_folder = join(input_path, t)
-        current_output_folder = join(output_folder, t)
-        images = [img for img in listdir(current_input_folder) if img.endswith('.jpg')]
-        
-        for image in tqdm(images, desc=f'Processing {t} images'):
-            input_image_path = join(current_input_folder, image)
-            image_ = cv2.imread(input_image_path)
+
+        # Resize and copy all images moved to raw folder into corresponding resolution folders
+        for image in tqdm(images, desc=f'Processing {split_type} images'):
+            raw_image_path = join(raw_folder, image)
+            image_ = cv2.imread(raw_image_path)
             for resolution, newsize in resolutions.items():
                 resized_image = cv2.resize(image_, tuple(newsize))
-                output_image_path = join(current_output_folder, resolution, image)
-                output_dir = join(current_output_folder, resolution)
-                if not exists(output_dir):
-                    makedirs(output_dir)
+                output_image_path = join(split_path, resolution, image)
                 cv2.imwrite(output_image_path, resized_image)
 
-def process_image_filenames(folder_path):
+
+def process_image_filenames(folder_path, img_ext):
     # Initialize lists to store UTM coordinates and panorama IDs
     utm_coords = []
-    pano_ids = []
+    filenames = []
     
     # Check if the folder exists
     if not exists(folder_path):
@@ -178,85 +174,74 @@ def process_image_filenames(folder_path):
     
     # Iterate through each file in the folder
     for filename in listdir(folder_path):
-        if filename.endswith('.jpg'):
+        if splitext(filename)[1] == img_ext:
             # Split the filename to extract the required information
             parts = filename.split('@')
-            if len(parts) >= 13:  # Ensure there are enough parts to extract data
-                try:
-                    # Extract UTM east, UTM north, and pano_id
-                    utm_east = float(parts[1].strip())
-                    utm_north = float(parts[2].strip())
-                    pano_id = parts[7].strip()
-                    
-                    # Append the extracted information to the lists
-                    utm_coords.append([utm_east, utm_north])
-                    pano_ids.append(pano_id)
-                except ValueError:
-                    # If conversion to float fails, skip this file
-                    print(f"Skipping file due to invalid format: {filename}")
+            try:
+                # Ensure there are enough parts to extract data
+                assert len(parts) == 16, f"Filename has wrong metadata count: {len(parts)} (should be 16)"
+                # Extract UTM east and UTM north
+                utm_east = float(parts[1].strip())
+                utm_north = float(parts[2].strip())
+                
+                # Append the extracted information to the lists
+                utm_coords.append([utm_east, utm_north])
+                filenames.append(filename)
+            except (ValueError, AssertionError):
+                # If conversion to float fails, skip this file
+                print(f"Skipping file due to invalid format: {filename}")
     
     # Convert lists to numpy arrays
     utm_coords_array = np.array(utm_coords)
     
     # Return the 2D numpy array of UTM coordinates and 1D array of panorama IDs as a tuple
-    return (utm_coords_array, pano_ids)
+    return (utm_coords_array, filenames)
 
 # Main function to run the entire script
-def main(configs):
-    root = configs['root']
+def main(configs, data_info):
     content = configs['vpr']['global_extractor']['netvlad']
     teacher_model = NetVladFeatureExtractor(join(configs['root'], content['ckpt_path']), arch=content['arch'],
                                             num_clusters=content['num_clusters'],
                                             pooling=content['pooling'], vladv2=content['vladv2'], nocuda=content['nocuda'])
     teacher_model.model.to(device).eval()
     
-    # note: edit the yaml file and set root to your project root
-    # also add a "name" field under the trainer_dataset.yaml's `data` field
-    input_path = join(root, configs['data']['name'], 'images', 'test')
+    # Assemble the path to where the testing dataset contains database and query folders
+    testset = configs['test_data']['name']
+    test_info = data_info[testset]
+    testset_path = join(configs['root'], data_info["testsets_path"], testset, test_info["subset"])
+    img_ext = test_info["img_ext"]
     
-    database_input_path = join(input_path, 'database')
-    database_gt, database_ids = process_image_filenames(database_input_path)
+    # Parse coordinates from all images directly under the database and query folders of the dataset
+    database_input_path, query_input_path = join(testset_path, test_info["database"]), join(testset_path, test_info["query"])
+    gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(database_input_path, img_ext))),
+               "query": dict(zip(["gt", "filenames"], process_image_filenames(query_input_path, img_ext)))}
     
-    query_input_path = join(input_path, 'queries')
-    query_gt, query_ids = process_image_filenames(query_input_path)
-    
-    # note: this is the directory the output images and h5 files will be in under root
-    logs_dir_name = "test_logs"
-    output_dir_name = configs['data']['name']
-    output_dir = join(root, logs_dir_name, output_dir_name)
-    
-    if not exists(output_dir):
-        process_data(root, input_path, output_dir)
+    # Divide images into resolutions for each of database and query folders
+    process_data(database_input_path, query_input_path, configs["test_data"]["resolution"], img_ext)
 
-    global_descriptor_dim = configs['train']['num_cluster']*configs['train']['cluster']['dimension']
-    posDistThr = configs['train']['triplet_loss']['posDistThr']
-    nonTrivPosDistSqThr = configs['train']['triplet_loss']['nonTrivPosDistSqThr']
-    nPosSample = configs['train']['triplet_loss']['nPosSample']
+    global_descriptor_dim = configs['train_conf']['num_cluster']*configs['train_conf']['cluster']['dimension']
+    posDistThr = configs['train_conf']['triplet_loss']['posDistThr']
+    nonTrivPosDistSqThr = configs['train_conf']['triplet_loss']['nonTrivPosDistSqThr']
+    nPosSample = configs['train_conf']['triplet_loss']['nPosSample']
 
-    for image_folder in ['database', 'queries']:
+    for image_folder in gt_info.keys():
         print(f'======================Processing {image_folder}')
-        if image_folder == 'queries':
-            gt = query_gt
-            ids = query_ids
-        else:
-            gt = database_gt
-            ids = database_ids
-            
-        image_folder_path = join(root, logs_dir_name, configs['data']['name'], image_folder)
-            
+        
+        image_folder_path = join(testset_path, test_info[image_folder])
+        
         if not exists(join(image_folder_path, 'neighbors.h5')):
             extract_descriptors(image_folder_path, teacher_model.model)
-            if image_folder == 'queries':
-                find_neighbors(ids, image_folder_path, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample, query=True)
-            else:
-                find_neighbors(ids, image_folder_path, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
+            find_neighbors(gt_info[image_folder]["id"], image_folder_path, img_ext, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='/scratch/zl3493/VPR4LQQ/configs/test_st_lucia.yaml')
+    parser.add_argument('-c', '--config', type=str, default='../../configs/test_trained_model.yaml')
+    parser.add_argument("-d", "--data_info", type=str, default="../../configs/testing_data.yaml")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-        main(config)
+    with open(args.data_info, "r") as d_locs_file:
+        data_info = yaml.safe_load(d_locs_file)
+    main(config, data_info)
