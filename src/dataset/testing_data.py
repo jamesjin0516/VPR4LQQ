@@ -111,17 +111,16 @@ def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, po
             sim = sim_batch[i]
             feature_closed = torch.topk(sim, descriptors.size(0), dim=0).indices.numpy()
             
-            key = splitext(name)[0]
-            physical_closed = set([str(name_id[ind]).zfill(6) for ind in nontrivial_positives[name_id.index(key)]])
+            physical_closed = set([str(name_id[ind]).zfill(6) for ind in nontrivial_positives[name_id.index(name)]])
             
-            negtives_ = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(key)]]
+            negtives_ = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(name)]]
             negtives = [f'{neg}.{img_ext}' for neg in negtives_]
             negtives = random.sample(negtives, 100)
 
             positives = []
             ind = 0
             while len(positives) < nPosSample * 20:
-                key = splitext(names[feature_closed[ind]])[0]    # removes the extension
+                key = names[feature_closed[ind]]
                 if key in physical_closed:
                     positives.append(names[feature_closed[ind]])
                 ind += 1
@@ -140,7 +139,7 @@ def process_data(database_path, query_path, resolutions, img_ext):
     split_types = {"database": database_path, "query": query_path}
     for split_type, split_path in split_types.items():
         # Move any unclassifed images under database or query to the "raw" resolution folder
-        images = [image for image in listdir(split_path) if splitext(image)[1] == img_ext]
+        images = [image for image in listdir(split_path) if splitext(image)[1].replace('.', '') == img_ext]
         raw_folder = join(split_path, "raw")
         if not exists(raw_folder):
             makedirs(raw_folder)
@@ -174,7 +173,8 @@ def process_image_filenames(folder_path, img_ext):
     
     # Iterate through each file in the folder
     for filename in listdir(folder_path):
-        if splitext(filename)[1] == img_ext:
+        ext = splitext(filename)[1].replace('.', '')
+        if ext == img_ext:
             # Split the filename to extract the required information
             parts = filename.split('@')
             try:
@@ -231,10 +231,19 @@ def main(configs, data_info):
         
         if not exists(join(image_folder_path, 'neighbors.h5')):
             extract_descriptors(image_folder_path, teacher_model.model)
-            find_neighbors(gt_info[image_folder]["id"], image_folder_path, img_ext, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
+            find_neighbors(gt_info[image_folder]["filenames"], image_folder_path, img_ext, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
+    
+    import debugpy
+    debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
+
+    # Wait for the debugger to attach
+    print("Waiting for debugger to attach...")
+    debugpy.wait_for_client()
+    
+    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../../configs/test_trained_model.yaml')
