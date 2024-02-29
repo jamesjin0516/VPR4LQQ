@@ -1,6 +1,7 @@
 import argparse
 from os.path import join
 import random
+import torch
 from torch.utils.data import DataLoader
 import yaml
 import torch
@@ -28,7 +29,7 @@ class VPRTester:
         self.database_images_set = self.load_database_images(data_folders)
         assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
 
-        # self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"])
+        self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"], configs['test_data'], configs['train_conf']['triplet_loss'])
 
         # still have to set up tensorboard writer, using training_settings (loss information, training dataset) and root
 
@@ -121,40 +122,33 @@ class VPRTester:
             for i,topk in enumerate(self.topk_nodes):
                 self.writer.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0,i]}, iter_num)
 
-def main(configs):
+def main(configs, data_info):
     root = configs['root']
-    data_name = configs['data']['name']
-    with open(join(root,'configs',f'{data_name}_test_data.yaml'), 'r') as f:
-        data_split_config = yaml.safe_load(f)
+    data_name = configs['test_data']['name']
 
-    name=data_split_config['name']
-    database_folder=data_split_config['database'][0]
-    query_folder=data_split_config['query'][0]
-    
-    test_data_dir_name = "test_logs"
+    test_data_dir_name = data_info['testsets_path']
+    database_folder = data_info[data_name]['database']
+    query_folder = data_info[data_name]['query']
+    subset = data_info[data_name]['subset']
 
     data_folders = {
-        "database": join(root, test_data_dir_name, name, database_folder),
-        "query": join(root, test_data_dir_name, name, query_folder)
+        "database": join(root, test_data_dir_name, data_name, subset, database_folder),
+        "query": join(root, test_data_dir_name, data_name, subset, query_folder)
     }
-
-    vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train']['data'])
+    
+    vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf']['data'])
 
     for iter_num in configs["num_repetitions"]:
         vpr.validation(iter_num)
     vpr.writer.close()
     
 if __name__=='__main__':
-    import debugpy
-    debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
-
-    # Wait for the debugger to attach
-    print("Waiting for debugger to attach...")
-    debugpy.wait_for_client()
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='/scratch/zl3493/VPR4LQQ/configs/test_st_lucia.yaml')
+    parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
+    parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-    main(config)
+    with open(args.data_info, "r") as d_locs_file:
+        data_info = yaml.safe_load(d_locs_file)
+    main(config, data_info)

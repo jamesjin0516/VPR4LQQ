@@ -156,7 +156,7 @@ def process_data(database_path, query_path, resolutions, img_ext):
             raw_image_path = join(raw_folder, image)
             image_ = cv2.imread(raw_image_path)
             for resolution, newsize in resolutions.items():
-                resized_image = cv2.resize(image_, tuple(newsize))
+                resized_image = cv2.resize(image_, tuple(reversed(newsize)))    # cv2.resize expects (width, height)
                 output_image_path = join(split_path, resolution, image)
                 cv2.imwrite(output_image_path, resized_image)
 
@@ -235,15 +235,6 @@ def main(configs, data_info):
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
-    
-    import debugpy
-    debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
-
-    # Wait for the debugger to attach
-    print("Waiting for debugger to attach...")
-    debugpy.wait_for_client()
-    
-    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../../configs/test_trained_model.yaml')

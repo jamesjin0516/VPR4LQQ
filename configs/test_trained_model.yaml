@@ -6,7 +6,7 @@ model_IO:
 
 test_data:
   name: "st_lucia"
-  resolution:
+  resolution:    # [height, width]
     180p: [180,240]
     240p: [240,320]
     360p: [360,480]
