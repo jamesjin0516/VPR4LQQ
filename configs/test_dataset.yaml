@@ -1,7 +1,0 @@
-name: st_lucia/images/test
-
-database:
-  - database
-
-query:
-  - queries

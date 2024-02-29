@@ -124,20 +124,20 @@ class VPRTester:
 
 def main(configs):
     root = configs['root']
-    data_name = configs['data']['name']
-    with open(join(root,'configs',f'{data_name}_test_data.yaml'), 'r') as f:
+    data_name = configs['test_data']['name']
+    with open(join(root,'configs','testing_data.yaml'), 'r') as f:
         data_split_config = yaml.safe_load(f)
 
-    name=data_split_config['name']
-    database_folder=data_split_config['database'][0]
-    query_folder=data_split_config['query'][0]
-    
-    test_data_dir_name = "test_logs"
+    test_data_dir_name = data_split_config['testsets_path']
+    database_folder=data_split_config[data_name]['database']
+    query_folder=data_split_config[data_name]['query']
+    subset = data_split_config[data_name]['subset']
 
     data_folders = {
-        "database": join(root, test_data_dir_name, name, database_folder),
-        "query": join(root, test_data_dir_name, name, query_folder)
+        "database": join(root, test_data_dir_name, data_name, subset, database_folder),
+        "query": join(root, test_data_dir_name, data_name, subset, query_folder)
     }
+    breakpoint()
     vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf']['data'])
 
     for iter_num in configs["num_repetitions"]:
