@@ -4,6 +4,8 @@ import random
 import torch
 from torch.utils.data import DataLoader
 import yaml
+import torch
+import h5py
 
 from dataset.Data_Control import BatchSampler
 from dataset.test_dataset import TestDataset, read_coordinates
@@ -12,24 +14,44 @@ from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtracto
 
 class VPRTester:
 
-    def __init__(self, root, data_folders, model_configs, training_settings):
+    def __init__(self, configs, data_folders, model_configs, training_settings):
         
-        ckpt_path = ...
-        self.vpr_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
-         num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
-         nocuda=model_configs['nocuda'])
-        self.vpr_model.model.eval()
+        
+        # content = configs['vpr']['global_extractor']['netvlad']
+        # ckpt_path = join(configs['root'], content['ckpt_path'])
+        
+        # self.vpr_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
+        #     num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
+        #     nocuda=model_configs['nocuda'])
+        # self.vpr_model.model.eval()
 
+        self.config = configs
         self.database_images_set = self.load_database_images(data_folders)
-        assert set("images_path", "descriptors", "locations") == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
+        assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
 
-        self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"])
+        # self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"])
 
         # still have to set up tensorboard writer, using training_settings (loss information, training dataset) and root
 
     def load_database_images(self, data_folders):
-        read_coordinates(...)
-        pass
+        databases={}
+        image_folder = data_folders["database"]
+
+        global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')['database']
+        
+        descriptors=torch.empty((len(global_descriptors),self.config['train']['cluster']['dimension']*self.config['train']['num_cluster']))
+        locations=torch.empty((len(global_descriptors),2))
+        names=[]
+        for i,(name,d) in enumerate(global_descriptors.items()):
+            splitted = name.split('@')
+            utm_east_str, utm_north_str = splitted[1], splitted[2]
+            image_path=join(image_folder, 'raw', name)
+            names.append(image_path)
+            descriptors[i]=torch.tensor(d.__array__())
+            locations[i]=torch.tensor([float(utm_east_str), float(utm_north_str)], dtype=torch.float32)
+
+        databases['database']={'images_path':names,'descriptors':descriptors,'locations':locations}
+        return databases
     
     def vpr_examing(self, query_desc, database_desc, query_loc, database_loc):
         query_desc,database_desc, query_loc, database_loc=query_desc.to(self.device),database_desc.to(self.device), query_loc.float().to(self.device), database_loc.float().to(self.device)
@@ -102,24 +124,37 @@ class VPRTester:
 
 def main(configs):
     root = configs['root']
-    with open(join(root,'configs','test_dataset.yaml'), 'r') as f:
+    data_name = configs['data']['name']
+    with open(join(root,'configs',f'{data_name}_test_data.yaml'), 'r') as f:
         data_split_config = yaml.safe_load(f)
 
     name=data_split_config['name']
     database_folder=data_split_config['database'][0]
     query_folder=data_split_config['query'][0]
+    
+    test_data_dir_name = "test_logs"
 
-    data_folders = {"database": join(root,'logs',name,database_folder), "query": join(root,'logs',name,query_folder)}
+    data_folders = {
+        "database": join(root, test_data_dir_name, name, database_folder),
+        "query": join(root, test_data_dir_name, name, query_folder)
+    }
 
-    vpr = VPRTester(root, data_folders, configs[...], configs[...])
+    vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train']['data'])
 
     for iter_num in configs["num_repetitions"]:
         vpr.validation(iter_num)
     vpr.writer.close()
     
 if __name__=='__main__':
+    import debugpy
+    debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
+
+    # Wait for the debugger to attach
+    print("Waiting for debugger to attach...")
+    debugpy.wait_for_client()
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='/home/unav/Desktop/Resolution_Agnostic_VPR/configs/trainer.yaml')
+    parser.add_argument('-c', '--config', type=str, default='/scratch/zl3493/VPR4LQQ/configs/test_st_lucia.yaml')
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
