@@ -1,21 +1,16 @@
 import numpy as np
-import torch
-from torch.utils.data import Dataset
-import torchvision.transforms as transforms
-
 from os.path import join,exists,basename
 from os import listdir
 from typing import Optional, Sized
-import numpy as np
-import json
-from torch.utils.data import ConcatDataset
 from dataset.GT_pose import GT_pose
-from torch.utils.data import Dataset,Sampler
+
+import torch
+import torchvision.transforms as transforms
+from torch.utils.data import Dataset, Sampler, ConcatDataset
+
 from sklearn.neighbors import NearestNeighbors
 import json
 from PIL import Image
-import torch
-import torchvision.transforms as transforms
 from tqdm import tqdm
 import h5py
 import random
@@ -47,7 +42,7 @@ class TestDataset(Dataset):
                                    std=[0.229, 0.224, 0.225]),
         ])
         self.image_folder = image_folder
-        self.resolution = test_data_config['resolution'][resolution]
+        self.resolution = resolution 
         self.nPosSample,self.nNegSample = train_loss_config['nPosSample'],train_loss_config['nNegSample'] # 1, 5
         self.neighbor_file = h5py.File(join(image_folder, 'neighbors.h5'), 'r')
         self.__prepare_data(image_folder)
@@ -72,13 +67,14 @@ class TestDataset(Dataset):
             locations.append(coor)
 
         locations = np.array(locations)
-        locations = torch.tensor(locations).expand(7, 2)
+        locations = torch.tensor(locations)
+        assert locations.shape[0] == 1 + self.nPosSample + self.nNegSample
 
         return [images_high, images_low, locations]
         # tensors, with shape [(7, #, #, #), (7, #, #, #), (7, 2)]
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data['data'])
 
     def __prepare_data(self,image_folder):
         self.data={}
@@ -91,9 +87,10 @@ class TestDataset(Dataset):
         self.image_coordinates = read_coordinates(image_list)
         for image in image_list:
             if image in self.neighbor_file:
-                image_high_path=join(image_folder,image)
-                image_high = self.input_transform()(Image.open(image_high_path))
-                image_low = self.input_transform()(Image.open(image_high_path).resize(self.resolution[0], self.resolution[1]))
+                image_high_path=join(image_folder, 'raw', image)
+                image_high = self.input_transform(Image.open(image_high_path))
+                image_low_path=join(image_folder, self.resolution, image)
+                image_low = self.input_transform(Image.open(image_low_path))
                 
                 positives_high,negatives_high=[],[]
                 positives_low,negatives_low=[],[]
@@ -106,10 +103,11 @@ class TestDataset(Dataset):
                 ind=0
                 while len(positives_high) < self.nPosSample:
                     name=positives_pool[ind].decode('utf-8')
-                    positive_high_path=join(image_folder, name)
+                    positive_high_path=join(image_folder, 'raw', name)
+                    positive_low_path=join(image_folder, self.resolution, name)
                     if exists(positive_high_path):
-                        positive_high = self.input_transform()(Image.open(positive_high_path))
-                        positive_low = self.input_transform()(Image.open(positive_high_path).resize(self.resolution[0], self.resolution[1]))
+                        positive_high = self.input_transform(Image.open(positive_high_path))
+                        positive_low = self.input_transform(Image.open(positive_low_path))
                         positives_high.append(positive_high)
                         positives_low.append(positive_low)
                         paths.append(positive_high_path)
@@ -121,10 +119,11 @@ class TestDataset(Dataset):
                 ind=0
                 while len(negatives_high) < self.nNegSample:
                     name=negatives_pool[ind].decode('utf-8')
-                    negative_high_path=join(image_folder, name)
+                    negative_high_path=join(image_folder, 'raw', name)
+                    negative_low_path=join(image_folder, self.resolution, name)
                     if exists(negative_high_path):
-                        negative_high = self.input_transform()(Image.open(negative_high_path))
-                        negative_low = self.input_transform()(Image.open(negative_high_path).resize(self.resolution[0], self.resolution[1]))
+                        negative_high = self.input_transform(Image.open(negative_high_path))
+                        negative_low = self.input_transform(Image.open(negative_low_path))
                         negatives_high.append(negative_high)
                         negatives_low.append(negative_low)
                         paths.append(negative_high_path)
