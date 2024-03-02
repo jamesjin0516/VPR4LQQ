@@ -26,11 +26,10 @@ class VPRTester:
         # self.vpr_model.model.eval()
 
         self.config = configs
-        self.database_images_set = self.load_database_images(data_folders)
-        assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
+        # self.database_images_set = self.load_database_images(data_folders)
+        # assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
 
         self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"], configs['test_data'], configs['train_conf']['triplet_loss'])
-
         # still have to set up tensorboard writer, using training_settings (loss information, training dataset) and root
 
     def load_database_images(self, data_folders):
@@ -137,7 +136,7 @@ def main(configs):
         "database": join(root, test_data_dir_name, data_name, subset, database_folder),
         "query": join(root, test_data_dir_name, data_name, subset, query_folder)
     }
-    breakpoint()
+
     vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf']['data'])
 
     for iter_num in configs["num_repetitions"]:
