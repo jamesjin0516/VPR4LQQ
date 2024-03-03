@@ -60,7 +60,7 @@ def extract_descriptors(image_folder, global_extractor):
         hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
-def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
+def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
     hfile_path = join(image_folder, 'global_descriptor.h5')
     hfile = h5py.File(hfile_path, 'r')
     
@@ -113,8 +113,7 @@ def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, po
             
             physical_closed = set([str(name_id[ind]).zfill(6) for ind in nontrivial_positives[name_id.index(name)]])
             
-            negtives_ = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(name)]]
-            negtives = [f'{neg}.{img_ext}' for neg in negtives_]
+            negtives = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(name)]]
             negtives = random.sample(negtives, 100)
 
             positives = []
@@ -231,7 +230,7 @@ def main(configs, data_info):
         
         if not exists(join(image_folder_path, 'neighbors.h5')):
             extract_descriptors(image_folder_path, teacher_model.model)
-            find_neighbors(gt_info[image_folder]["filenames"], image_folder_path, img_ext, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
+            find_neighbors(gt_info[image_folder]["filenames"], image_folder_path, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':

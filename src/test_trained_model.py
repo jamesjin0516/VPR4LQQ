@@ -1,6 +1,7 @@
 import argparse
 from os.path import join
 import random
+from tensorboardX import SummaryWriter
 import torch
 from torch.utils.data import DataLoader
 import yaml
@@ -8,30 +9,35 @@ import torch
 import h5py
 
 from dataset.Data_Control import BatchSampler
-from dataset.test_dataset import TestDataset, read_coordinates
+from dataset.test_dataset import TestDataset
 from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
 
 
 class VPRTester:
 
-    def __init__(self, configs, data_folders, model_configs, training_settings):
-        
-        
-        # content = configs['vpr']['global_extractor']['netvlad']
-        # ckpt_path = join(configs['root'], content['ckpt_path'])
-        
-        # self.vpr_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
-        #     num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
-        #     nocuda=model_configs['nocuda'])
-        # self.vpr_model.model.eval()
+    def __init__(self, root, data_conf, data_folders, model_configs, train_conf, model_IO):
+        # Assemble logs and weights folder name using training data name and loss and data configurations
+        train_data = train_conf["data"]["name"]
+        train_outdir = join(train_data + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
+                            + ("_triplet" if train_conf["loss"]["triplet"] else ""),
+                            str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
 
-        self.config = configs
+        log_dir = join(root, model_IO["logs_path"], data_conf["name"] + "_test", "res_" + data_conf["test_res"], train_outdir)
+        self.tensorboard = SummaryWriter(log_dir=log_dir)
+        
+        # Load the trained model, picking "model_best.pth.tar" as weights via type="pipeline"
+        ckpt_path = join(root, model_IO["weights_path"], train_outdir)
+        
+        self.vpr_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
+            num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
+            nocuda=model_configs['nocuda'])
+        self.vpr_model.model.eval()
+
+        self.train_conf = train_conf
         self.database_images_set = self.load_database_images(data_folders)
         assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
 
-        self.query_images_set = TestDataset(data_folders["query"], training_settings["resolution"], configs['test_data'], configs['train_conf']['triplet_loss'])
-
-        # still have to set up tensorboard writer, using training_settings (loss information, training dataset) and root
+        self.query_images_set = TestDataset(data_folders["query"], data_conf["test_res"], train_conf['triplet_loss'])
 
     def load_database_images(self, data_folders):
         databases={}
@@ -39,7 +45,7 @@ class VPRTester:
 
         global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')['database']
         
-        descriptors=torch.empty((len(global_descriptors),self.config['train']['cluster']['dimension']*self.config['train']['num_cluster']))
+        descriptors=torch.empty((len(global_descriptors),self.train_conf["cluster"]["dimension"] * self.train_conf["num_cluster"]))
         locations=torch.empty((len(global_descriptors),2))
         names=[]
         for i,(name,d) in enumerate(global_descriptors.items()):
@@ -101,7 +107,7 @@ class VPRTester:
         # All query images are evaluated for VPR recall
         query_batch=20
         batch_sampler=BatchSampler([list(range(len(self.query_images_set)))], query_batch)
-        data_loader=DataLoader(self.query_images_set, num_workers=self.config['train']['num_worker'],pin_memory=True,batch_sampler=batch_sampler)
+        data_loader = DataLoader(self.query_images_set, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
 
         recall_score = torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))
         with torch.no_grad():
@@ -110,6 +116,7 @@ class VPRTester:
                 images_low=images_low[:,0,:,:,:]
                 images_low=images_low.to(self.device)
                 locations=locations[:,0,:]
+                # Compute global descriptors for low resolution images
                 with torch.autocast('cuda', torch.float32):
                     features_low=self.vpr_model.model.encoder(images_low)
                     vectors_low=self.vpr_model.model.pool(features_low).detach().cpu()
@@ -120,7 +127,10 @@ class VPRTester:
             recall_rate = recall_score / len(self.query_images_set)
 
             for i,topk in enumerate(self.topk_nodes):
-                self.writer.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0,i]}, iter_num)
+                self.tensorboard.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0,i]}, iter_num)
+            
+            del recall_score, recall_rate
+
 
 def main(configs, data_info):
     root = configs['root']
@@ -136,7 +146,7 @@ def main(configs, data_info):
         "query": join(root, test_data_dir_name, data_name, subset, query_folder)
     }
     
-    vpr = VPRTester(configs, data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf']['data'])
+    vpr = VPRTester(root, configs['test_data'], data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf'], configs["model_IO"])
 
     for iter_num in configs["num_repetitions"]:
         vpr.validation(iter_num)

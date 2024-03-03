@@ -11,13 +11,16 @@ test_data:
     240p: [240,320]
     360p: [360,480]
     480p: [480,640]
+  test_res: 240p
 
 train_conf:
+  num_worker: 5
   num_cluster: 64
   lr: 0.000001
   lr_decay: 0.000000000002
   exponential_gamma: 0.99999
   data:
+    name: pitts250k
     resolution: 180p
     qp: -1
   cluster:
