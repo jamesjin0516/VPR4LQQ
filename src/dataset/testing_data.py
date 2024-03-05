@@ -56,7 +56,7 @@ def extract_descriptors(image_folder, global_extractor):
                 images_name = []
             image = input_transform()(Image.open(join(images_high_path, im)))
             images_list.append(image.to(device))
-            images_name.append(f'{im}')
+            images_name.append(im)
         hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors

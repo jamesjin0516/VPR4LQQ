@@ -4,6 +4,7 @@ import random
 from tensorboardX import SummaryWriter
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 import yaml
 import torch
 import h5py
@@ -15,7 +16,9 @@ from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtracto
 
 class VPRTester:
 
-    def __init__(self, root, data_conf, data_folders, model_configs, train_conf, model_IO):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def __init__(self, root, data_conf, data_folders, vpr_conf, train_conf, model_IO):
         # Assemble logs and weights folder name using training data name and loss and data configurations
         train_data = train_conf["data"]["name"]
         train_outdir = join(train_data + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
@@ -24,23 +27,28 @@ class VPRTester:
 
         log_dir = join(root, model_IO["logs_path"], data_conf["name"] + "_test", "res_" + data_conf["test_res"], train_outdir)
         self.tensorboard = SummaryWriter(log_dir=log_dir)
+        self.thresholds = torch.tensor(vpr_conf["threshold"])
+        self.topk_nodes = torch.tensor(vpr_conf["topk"])
+        self.batch_size = train_conf["batch_size"]
         
         # Load the trained model, picking "model_best.pth.tar" as weights via type="pipeline"
-        ckpt_path = join(root, model_IO["weights_path"], train_outdir)
-        
+        ckpt_path, model_configs = join(root, model_IO["weights_path"], train_outdir), vpr_conf["global_extractor"]["netvlad"]
+
         self.vpr_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
             num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
             nocuda=model_configs['nocuda'])
         self.vpr_model.model.eval()
+        self.pretrained_model = NetVladFeatureExtractor(join(root, model_configs["ckpt_path"]), arch=model_configs['arch'],
+            num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
+            nocuda=model_configs['nocuda'])
+        self.pretrained_model.model.eval()
 
         self.train_conf = train_conf
         self.database_images_set = self.load_database_images(data_folders)
-        assert {"images_path", "descriptors", "locations"} == set(self.database_images_set.keys()), f"database keys are incorrect: {self.database.keys()}"
 
         self.query_images_set = TestDataset(data_folders["query"], data_conf["test_res"], train_conf['triplet_loss'])
 
     def load_database_images(self, data_folders):
-        databases={}
         image_folder = data_folders["database"]
 
         global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')['database']
@@ -56,11 +64,10 @@ class VPRTester:
             descriptors[i]=torch.tensor(d.__array__())
             locations[i]=torch.tensor([float(utm_east_str), float(utm_north_str)], dtype=torch.float32)
 
-        databases['database']={'images_path':names,'descriptors':descriptors,'locations':locations}
-        return databases
+        return {'images_path': names, 'descriptors': descriptors, 'locations': locations}
     
     def vpr_examing(self, query_desc, database_desc, query_loc, database_loc):
-        query_desc,database_desc, query_loc, database_loc=query_desc.to(self.device),database_desc.to(self.device), query_loc.float().to(self.device), database_loc.float().to(self.device)
+        query_desc, database_desc, query_loc, database_loc = query_desc.to(self.device), database_desc.to(self.device), query_loc.float().to(self.device), database_loc.float().to(self.device)
         sim = torch.einsum('id,jd->ij', query_desc, database_desc)
         topk_ = torch.topk(sim, self.topk_nodes[-1], dim=1)
         topk=topk_.indices
@@ -105,14 +112,13 @@ class VPRTester:
         random.seed(10)
         
         # All query images are evaluated for VPR recall
-        query_batch=20
-        batch_sampler=BatchSampler([list(range(len(self.query_images_set)))], query_batch)
+        query_batch = 20
+        batch_sampler = BatchSampler([list(range(len(self.query_images_set)))], query_batch)
         data_loader = DataLoader(self.query_images_set, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
 
         recall_score = torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))
         with torch.no_grad():
-            for i, [images_high, images_low, locations] in enumerate(data_loader):
-                print(f'Examing [{i+1}]/[{int(len(self.query_images_set)/query_batch)}]...')
+            for images_high, images_low, locations in tqdm(data_loader, total=len(self.query_images_set) // query_batch + 1):
                 images_low=images_low[:,0,:,:,:]
                 images_low=images_low.to(self.device)
                 locations=locations[:,0,:]
@@ -130,6 +136,73 @@ class VPRTester:
                 self.tensorboard.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0,i]}, iter_num)
             
             del recall_score, recall_rate
+        torch.cuda.empty_cache()
+
+        if not hasattr(self, "valid_data_sets"): return
+        print("Start loss validation ...")
+        sample_size = 15
+        len_init = len(self.valid_data_sets[0])
+        indices = [random.sample(list(range(len_init)),sample_size)]
+        for d in self.valid_data_sets[1:]:
+            len_current = len_init + len(d)
+            indices.append(random.sample(list(range(len_init,len_current)), sample_size))
+            len_init = len_current
+        batch_sampler = BatchSampler(indices, self.batch_size)
+        data_loader = DataLoader(self.valid_data_set, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
+
+        with torch.no_grad():
+            Loss_dict = {'loss': 0}
+            if self.train_conf['loss']['distill']:
+                Loss_dict['distill'] = 0
+            if self.train_conf['loss']['vlad']:
+                Loss_dict['vlad'] = 0
+            if self.train_conf['loss']['triplet']:
+                Loss_dict['triplet'] = 0
+            for images_high, images_low, _ in tqdm(data_loader, total=len(self.valid_data_set) // self.batch_size + 1):
+                images_high, images_low = images_high.to(self.device), images_low.to(self.device)
+                B, G, C, HH, WH = images_high.size()
+                B, G, C, HL, WL = images_low.size()
+                images_high = images_high.view(B*G, C, HH, WH)
+                images_low = images_low.view(B*G, C, HL, WL)
+                with torch.autocast('cuda', torch.float32):
+                    features_low = self.vpr_model.model.encoder(images_low)
+                    vectors_low = self.vpr_model.model.pool(features_low)
+                    features_high = self.pretrained_model.model.encoder(images_high)
+                    vectors_high = self.pretrained_model.model.pool(features_high)
+
+                    Loss_vlad = self.vlad_mse_loss(vectors_low, vectors_high).detach().cpu() * B * 100
+                    Loss_sp = self.similarity_loss(features_low, features_high).detach().cpu() / 1000
+
+                    _, D = vectors_low.size()
+                    vectors_low = vectors_low.view(B, G, D)
+                    Loss_triplet = 0
+                    for vector_low in vectors_low:
+                        vladQ, vladP, vladN = torch.split(vector_low, [1, self.nPosSample, self.nNegSample])
+                        vladQ = vladQ.squeeze()
+                        for vP in vladP:
+                            for vN in vladN:
+                                Loss_triplet += self.triplet_loss(vladQ, vP, vN)
+
+                    Loss_triplet /= (self.nPosSample * self.nNegSample * 10)
+                    Loss_triplet = Loss_triplet.detach().cpu()
+
+                    Loss= Loss_sp + Loss_vlad + Loss_triplet
+
+                    Loss_dict['loss'] += Loss
+                    if self.train_conf['loss']['distill']:
+                        Loss_dict['distill'] += Loss_sp
+                    if self.train_conf['loss']['vlad']:
+                        Loss_dict['vlad'] += Loss_vlad
+                    if self.train_conf['loss']['triplet']:
+                        Loss_dict['triplet'] += Loss_triplet
+
+                del images_high,images_low,vectors_low,vectors_high,vector_teacher_low
+                torch.cuda.empty_cache()
+
+            self.tensorboard.add_scalar('Valid/Loss', Loss_dict['loss'] / int(sample_size * len(self.valid_data_sets)), iter_num)
+            Loss_dict.pop('loss')
+            for k, v in Loss_dict.items():
+                self.tensorboard.add_scalar(f'Valid/Loss_{k}', v / int(sample_size * len(self.valid_data_sets)), iter_num)
 
 
 def main(configs, data_info):
@@ -145,12 +218,13 @@ def main(configs, data_info):
         "database": join(root, test_data_dir_name, data_name, subset, database_folder),
         "query": join(root, test_data_dir_name, data_name, subset, query_folder)
     }
+    if "valid" in data_info[data_name]: data_folders["valid"] = join(root, test_data_dir_name, data_name, subset, data_info["valid"])
     
-    vpr = VPRTester(root, configs['test_data'], data_folders, configs['vpr']['global_extractor']['netvlad'], configs['train_conf'], configs["model_IO"])
+    vpr = VPRTester(root, configs['test_data'], data_folders, configs['vpr'], configs['train_conf'], configs["model_IO"])
 
-    for iter_num in configs["num_repetitions"]:
+    for iter_num in range(1, configs["test_runs"] + 1):
         vpr.validation(iter_num)
-    vpr.writer.close()
+    vpr.tensorboard.close()
     
 if __name__=='__main__':
     parser = argparse.ArgumentParser()

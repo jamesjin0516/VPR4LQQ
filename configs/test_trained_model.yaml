@@ -1,11 +1,12 @@
 root: '/scratch/gj2148/VPR4LQQ'
+test_runs: 5
 
 model_IO:
   weights_path: parameters/RA_VPR
   logs_path: logs/tensorboard_logs
 
 test_data:
-  name: "st_lucia"
+  name: "tokyo247"
   resolution:    # [height, width]
     180p: [180,240]
     240p: [240,320]
@@ -14,6 +15,7 @@ test_data:
   test_res: 240p
 
 train_conf:
+  batch_size: 15
   num_worker: 5
   num_cluster: 64
   lr: 0.000001
@@ -28,7 +30,7 @@ train_conf:
     descriptor_per_image: 100
     dimension: 512
   loss:
-    distill: true
+    distill: false
     vlad: false
     triplet: true
   triplet_loss:

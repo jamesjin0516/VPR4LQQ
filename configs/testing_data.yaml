@@ -7,3 +7,9 @@ st_lucia:
   database: database
   query: queries
   img_ext: jpg
+
+tokyo247:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
