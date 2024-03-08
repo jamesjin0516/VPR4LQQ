@@ -42,7 +42,8 @@ def extract_descriptors(image_folder, global_extractor):
         images_high_path = join(image_folder, 'raw')
         image_high_names = set(sorted(listdir(images_high_path)))
         for i, im in tqdm(enumerate(image_high_names), total=len(image_high_names)):
-            if i % 50 == 0 or i == len(image_high_names) - 1:
+            image = Image.open(join(images_high_path, im))
+            if i % 50 == 0 or i == len(image_high_names) - 1 or (len(images_list) > 0 and images_list[-1].size != image.size):
                 if i > 0:
                     image_ = torch.stack(images_list)
                     feature = global_extractor.encoder(image_)
@@ -52,9 +53,8 @@ def extract_descriptors(image_folder, global_extractor):
                     index += vector.size(0)
                     del image_, feature, vector
                     torch.cuda.empty_cache()
-                images_list = []
-                images_name = []
-            image = input_transform()(Image.open(join(images_high_path, im)))
+                images_list, images_name = [], []
+            image = input_transform()(image)
             images_list.append(image.to(device))
             images_name.append(im)
         hfile.close()
@@ -73,7 +73,7 @@ def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr,
         locations[i, :] = gt[name_id.index(img_name)]
         descriptors[i, :] = img_feat.__array__()
 
-    knn = NearestNeighbors(n_jobs=1)
+    knn = NearestNeighbors(n_jobs=-1)
     knn.fit(gt)
     nontrivial_positives = list(knn.radius_neighbors(gt,
                                                      radius=nonTrivPosDistSqThr,
@@ -155,6 +155,8 @@ def process_data(database_path, query_path, resolutions, img_ext):
             raw_image_path = join(raw_folder, image)
             image_ = cv2.imread(raw_image_path)
             for resolution, newsize in resolutions.items():
+                if isinstance(newsize, int):
+                    newsize = (newsize, int(image_.shape[1] * newsize / image_.shape[0]))
                 resized_image = cv2.resize(image_, tuple(reversed(newsize)))    # cv2.resize expects (width, height)
                 output_image_path = join(split_path, resolution, image)
                 cv2.imwrite(output_image_path, resized_image)
@@ -210,14 +212,14 @@ def main(configs, data_info):
     testset_path = join(configs['root'], data_info["testsets_path"], testset, test_info["subset"])
     img_ext = test_info["img_ext"]
     
-    # Parse coordinates from all images directly under the database and query folders of the dataset
-    database_input_path, query_input_path = join(testset_path, test_info["database"]), join(testset_path, test_info["query"])
-    gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(database_input_path, img_ext))),
-               "query": dict(zip(["gt", "filenames"], process_image_filenames(query_input_path, img_ext)))}
-    
     # Divide images into resolutions for each of database and query folders
+    database_input_path, query_input_path = join(testset_path, test_info["database"]), join(testset_path, test_info["query"])
     process_data(database_input_path, query_input_path, configs["test_data"]["resolution"], img_ext)
 
+    # Parse coordinates from all images directly under the database and query folders of the dataset
+    gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(join(database_input_path, "raw"), img_ext))),
+               "query": dict(zip(["gt", "filenames"], process_image_filenames(join(query_input_path, "raw"), img_ext)))}
+    
     global_descriptor_dim = configs['train_conf']['num_cluster']*configs['train_conf']['cluster']['dimension']
     posDistThr = configs['train_conf']['triplet_loss']['posDistThr']
     nonTrivPosDistSqThr = configs['train_conf']['triplet_loss']['nonTrivPosDistSqThr']

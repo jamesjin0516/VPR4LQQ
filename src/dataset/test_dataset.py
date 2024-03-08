@@ -29,6 +29,20 @@ def read_coordinate(image_name):
     y = parts[2]
     return [float(x), float(y)]
 
+
+def collate_fn(batch):
+    """
+    Custom batch preparation function. Must be used with TestDataset in DataLoaders.
+    Collect images_high, images_low, and locations along batch dimension and stack the former two into tensors if possible.
+    """
+    images_high = [batch_item[0] for batch_item in batch]
+    images_low = [batch_item[1] for batch_item in batch]
+    locations = torch.stack([batch_item[2] for batch_item in batch])
+    if all(isinstance(image_high, torch.Tensor) for image_high in images_high):
+        images_high, images_low = torch.stack(images_high), torch.stack(images_low)
+    return images_high, images_low, locations
+
+
 class TestDataset(Dataset):
 
     def __init__(self, image_folder, resolution, train_loss_config):
@@ -49,27 +63,34 @@ class TestDataset(Dataset):
 
 
     def __getitem__(self, index):
-        high_image_set,low_image_set=self.data[index]
+        """
+        Retrieves a high and a low resolution image, each with its postive and negative neighboring images at its resolution.
+        All image are prepended with a dimension of length 1.
+        """
+        high_image_set, low_image_set=self.data[index]
 
-        images_high,images_low,locations=[],[],[]
-        image_high_path,positives_high,negtives_high=high_image_set
-        image_low_path,positives_low,negtives_low=low_image_set
+        images_high, images_low, locations=[], [], []
+        image_high_path, positives_high, negtives_high = high_image_set
+        image_low_path, positives_low, negtives_low = low_image_set
+        # Only stack image tensors if all have the same shape; otherwise keep as list of tensors
+        img_same_res = True
         for imp in [image_high_path] + positives_high + negtives_high:
-            im = self.input_transform(Image.open(imp))
+            im = self.input_transform(Image.open(imp)).unsqueeze(0)
+            if len(images_high) > 0 and im.shape != images_high[-1].shape: img_same_res = False
             images_high.append(im)
-        images_high = torch.stack(images_high)
+        if img_same_res: images_high = torch.stack(images_high)
         for imp in [image_low_path] + positives_low + negtives_low:
-            im = self.input_transform(Image.open(imp))
+            im = self.input_transform(Image.open(imp)).unsqueeze(0)
             images_low.append(im)
             locations.append(read_coordinate(imp))
-        images_low = torch.stack(images_low)
+        if img_same_res: images_low = torch.stack(images_low)
 
         locations = np.array(locations)
         locations = torch.tensor(locations)
         assert locations.shape[0] == 1 + self.nPosSample + self.nNegSample
 
         return [images_high, images_low, locations]
-        # tensors, with shape [(7, #, #, #), (7, #, #, #), (7, 2)]
+        # Shape: [(7, 1, chnl, height, with), (7, 1, ..., ..., ...), (7, 2)]
 
     def __len__(self):
         return len(self.data)

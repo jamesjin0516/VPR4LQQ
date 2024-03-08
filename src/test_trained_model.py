@@ -10,7 +10,7 @@ import torch
 import h5py
 
 from dataset.Data_Control import BatchSampler
-from dataset.test_dataset import TestDataset
+from dataset.test_dataset import TestDataset, collate_fn
 from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
 
 
@@ -55,8 +55,8 @@ class VPRTester:
         
         descriptors=torch.empty((len(global_descriptors),self.train_conf["cluster"]["dimension"] * self.train_conf["num_cluster"]))
         locations=torch.empty((len(global_descriptors),2))
-        names=[]
-        for i,(name,d) in enumerate(global_descriptors.items()):
+        names = []
+        for i,(name,d) in enumerate(tqdm(global_descriptors.items(), desc="Reading database info")):
             splitted = name.split('@')
             utm_east_str, utm_north_str = splitted[1], splitted[2]
             image_path=join(image_folder, 'raw', name)
@@ -114,28 +114,42 @@ class VPRTester:
         # All query images are evaluated for VPR recall
         query_batch = 20
         batch_sampler = BatchSampler([list(range(len(self.query_images_set)))], query_batch)
-        data_loader = DataLoader(self.query_images_set, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
+        data_loader = DataLoader(self.query_images_set, collate_fn=collate_fn, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
 
-        recall_score = torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))
+        recall_score, r_pretrained_score = torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0])), torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))
         with torch.no_grad():
             for images_high, images_low, locations in tqdm(data_loader, total=len(self.query_images_set) // query_batch + 1):
-                images_low=images_low[:,0,:,:,:]
-                images_low=images_low.to(self.device)
-                locations=locations[:,0,:]
+                # Batches containing identical resolution images are stacked into tensors
+                if isinstance(images_low, torch.Tensor):
+                    images_low = images_low[:, 0, 0, :, :, :].to(self.device)
+                # otherwise batches contain lists, which each have the query image and its positive & negative images
+                else:
+                    images_low = [batch_item[0].to(self.device) for batch_item in images_low]
+                locations = locations[:, 0, :]
                 # Compute global descriptors for low resolution images
                 with torch.autocast('cuda', torch.float32):
-                    features_low=self.vpr_model.model.encoder(images_low)
-                    vectors_low=self.vpr_model.model.pool(features_low).detach().cpu()
+                    if isinstance(images_low, torch.Tensor):
+                        features_low = self.vpr_model.model.encoder(images_low)
+                        f_pretrained_low = self.pretrained_model.model.encoder(images_low)
+                        vectors_low = self.vpr_model.model.pool(features_low).detach().cpu()
+                        v_pretrained_low = self.pretrained_model.model.pool(f_pretrained_low).detach().cpu()
+                    else:
+                        # Given different query image resolutions, compute descriptors sequentially
+                        features_low = [self.vpr_model.model.encoder(image_low) for image_low in images_low]
+                        f_pretrained_low = [self.pretrained_model.model.encoder(image_low) for image_low in images_low]
+                        vectors_low = torch.cat([self.vpr_model.model.pool(feature_low).detach().cpu() for feature_low in features_low])
+                        v_pretrained_low = torch.cat([self.pretrained_model.model.pool(feature_low).detach().cpu() for feature_low in f_pretrained_low])
 
-                recall_score += self.vpr_examing(vectors_low, self.database_images_set['descriptors'],locations, self.database_images_set['locations'])
-                del images_low, locations, features_low, vectors_low
+                recall_score += self.vpr_examing(vectors_low, self.database_images_set['descriptors'], locations, self.database_images_set['locations'])
+                r_pretrained_score += self.vpr_examing(v_pretrained_low, self.database_images_set['descriptors'], locations, self.database_images_set['locations'])
+                del images_low, locations, features_low, vectors_low, f_pretrained_low, v_pretrained_low
 
-            recall_rate = recall_score / len(self.query_images_set)
+            recall_rate, r_pretrained_rate = recall_score / len(self.query_images_set), r_pretrained_score / len(self.query_images_set)
 
             for i,topk in enumerate(self.topk_nodes):
-                self.tensorboard.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0,i]}, iter_num)
+                self.tensorboard.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0, i], "pretrained": r_pretrained_rate[0, i]}, iter_num)
             
-            del recall_score, recall_rate
+            del recall_score, recall_rate, r_pretrained_score, r_pretrained_rate
         torch.cuda.empty_cache()
 
         if not hasattr(self, "valid_data_sets"): return

@@ -7,11 +7,11 @@ model_IO:
 
 test_data:
   name: "tokyo247"
-  resolution:    # [height, width]
-    180p: [180,240]
-    240p: [240,320]
-    360p: [360,480]
-    480p: [480,640]
+  resolution:    # 2 number list enforces dimension; 1 number chooses height and preserves aspect ratio
+    180p: 180    # [height, width]
+    240p: 240
+    360p: 360
+    480p: 480
   test_res: 240p
 
 train_conf:
