@@ -11,6 +11,7 @@ import h5py
 
 from dataset.Data_Control import BatchSampler
 from dataset.test_dataset import TestDataset, collate_fn
+from feature.Global_Extractors import GlobalExtractors
 from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
 
 
@@ -19,30 +20,30 @@ class VPRTester:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def __init__(self, root, data_conf, data_folders, vpr_conf, train_conf, model_IO):
-        # Assemble logs and weights folder name using training data name and loss and data configurations
-        train_data = train_conf["data"]["name"]
-        train_outdir = join(train_data + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
-                            + ("_triplet" if train_conf["loss"]["triplet"] else ""),
-                            str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
+        self.g_extr = GlobalExtractors(root, vpr_conf["global_extractor"])
+        if self.g_extr.compare_trained():
+            # Assemble logs and weights folder name using training data name and loss and data configurations
+            train_data = train_conf["data"]["name"]
+            log_suffix = join(train_data + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
+                                + ("_triplet" if train_conf["loss"]["triplet"] else ""),
+                                str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
+        
+            # Load the trained model, picking "model_best.pth.tar" as weights via type="pipeline"
+            ckpt_path, model_configs = join(root, model_IO["weights_path"], log_suffix), vpr_conf["global_extractor"]["netvlad"]
+            self.trained_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
+                num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
+                nocuda=model_configs['nocuda'])
+            self.trained_model.model.eval()
+        else:
+            log_suffix = "_".join(self.g_extr.models) + "_pretrained"
+        
 
-        log_dir = join(root, model_IO["logs_path"], data_conf["name"] + "_test", "res_" + data_conf["test_res"], train_outdir)
+        log_dir = join(root, model_IO["logs_path"], data_conf["name"] + "_test", "res_" + data_conf["test_res"], log_suffix)
         self.tensorboard = SummaryWriter(log_dir=log_dir)
         self.thresholds = torch.tensor(vpr_conf["threshold"])
         self.topk_nodes = torch.tensor(vpr_conf["topk"])
         self.batch_size = train_conf["batch_size"]
         
-        # Load the trained model, picking "model_best.pth.tar" as weights via type="pipeline"
-        ckpt_path, model_configs = join(root, model_IO["weights_path"], train_outdir), vpr_conf["global_extractor"]["netvlad"]
-
-        self.vpr_model = NetVladFeatureExtractor(ckpt_path, type="pipeline", arch=model_configs['arch'],
-            num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
-            nocuda=model_configs['nocuda'])
-        self.vpr_model.model.eval()
-        self.pretrained_model = NetVladFeatureExtractor(join(root, model_configs["ckpt_path"]), arch=model_configs['arch'],
-            num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'], vladv2=model_configs['vladv2'],
-            nocuda=model_configs['nocuda'])
-        self.pretrained_model.model.eval()
-
         self.train_conf = train_conf
         self.database_images_set = self.load_database_images(data_folders)
 
@@ -116,7 +117,8 @@ class VPRTester:
         batch_sampler = BatchSampler([list(range(len(self.query_images_set)))], query_batch)
         data_loader = DataLoader(self.query_images_set, collate_fn=collate_fn, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
 
-        recall_score, r_pretrained_score = torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0])), torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))
+        recall_score = {model: torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0])) for model in self.g_extr.models}
+        if self.g_extr.compare_trained(): recall_score["trained_netvlad"] = torch.zeros((self.thresholds.shape[0],self.topk_nodes.shape[0]))
         with torch.no_grad():
             for images_high, images_low, locations in tqdm(data_loader, total=len(self.query_images_set) // query_batch + 1):
                 # Batches containing identical resolution images are stacked into tensors
@@ -129,30 +131,27 @@ class VPRTester:
                 # Compute global descriptors for low resolution images
                 with torch.autocast('cuda', torch.float32):
                     if isinstance(images_low, torch.Tensor):
-                        features_low = self.vpr_model.model.encoder(images_low)
-                        f_pretrained_low = self.pretrained_model.model.encoder(images_low)
-                        vectors_low = self.vpr_model.model.pool(features_low).detach().cpu()
-                        v_pretrained_low = self.pretrained_model.model.pool(f_pretrained_low).detach().cpu()
+                        vectors_low = {model: self.trained_model(images_low) if model == "trained_netvlad" else self.g_extr(model, images_low) for model in recall_score.keys()}
                     else:
                         # Given different query image resolutions, compute descriptors sequentially
-                        features_low = [self.vpr_model.model.encoder(image_low) for image_low in images_low]
-                        f_pretrained_low = [self.pretrained_model.model.encoder(image_low) for image_low in images_low]
-                        vectors_low = torch.cat([self.vpr_model.model.pool(feature_low).detach().cpu() for feature_low in features_low])
-                        v_pretrained_low = torch.cat([self.pretrained_model.model.pool(feature_low).detach().cpu() for feature_low in f_pretrained_low])
+                        vectors_low = {model: torch.cat([self.trained_model(images_low) if model == "trained_netvlad" else self.g_extr(model, image_low) for image_low in images_low])
+                                       for model in recall_score.keys()}
 
-                recall_score += self.vpr_examing(vectors_low, self.database_images_set['descriptors'], locations, self.database_images_set['locations'])
-                r_pretrained_score += self.vpr_examing(v_pretrained_low, self.database_images_set['descriptors'], locations, self.database_images_set['locations'])
-                del images_low, locations, features_low, vectors_low, f_pretrained_low, v_pretrained_low
+                for model, vector_low in vectors_low.items():
+                    recall_score[model] += self.vpr_examing(vector_low, self.database_images_set['descriptors'], locations, self.database_images_set['locations'])
+                del images_high, images_low, locations, vectors_low
 
-            recall_rate, r_pretrained_rate = recall_score / len(self.query_images_set), r_pretrained_score / len(self.query_images_set)
+            recall_rate = {model: recall_score[model] / len(self.query_images_set) for model in recall_score.keys()}
 
             for i,topk in enumerate(self.topk_nodes):
-                self.tensorboard.add_scalars(f'Recall rate/@{int(topk)}', {'trained model': recall_rate[0, i], "pretrained": r_pretrained_rate[0, i]}, iter_num)
+                self.tensorboard.add_scalars(f'Recall rate/@{int(topk)}', {model: recall_rate[model][0, i] for model in recall_rate}, iter_num)
             
-            del recall_score, recall_rate, r_pretrained_score, r_pretrained_rate
+            del recall_score, recall_rate
         torch.cuda.empty_cache()
 
-        if not hasattr(self, "valid_data_sets"): return
+        if not hasattr(self, "valid_data_sets") or not self.g_extr.compare_trained():
+            print("Not testing with loss testing data and / or trained models, exiting vpr examining.")
+            return
         print("Start loss validation ...")
         sample_size = 15
         len_init = len(self.valid_data_sets[0])
@@ -179,10 +178,10 @@ class VPRTester:
                 images_high = images_high.view(B*G, C, HH, WH)
                 images_low = images_low.view(B*G, C, HL, WL)
                 with torch.autocast('cuda', torch.float32):
-                    features_low = self.vpr_model.model.encoder(images_low)
-                    vectors_low = self.vpr_model.model.pool(features_low)
-                    features_high = self.pretrained_model.model.encoder(images_high)
-                    vectors_high = self.pretrained_model.model.pool(features_high)
+                    features_low = self.trained_model.model.encoder(images_low)
+                    vectors_low = self.trained_model.model.pool(features_low)
+                    features_high = self.g_extr.models_objs["pretrained_netvlad"].model.encoder(images_high)
+                    vectors_high = self.g_extr.models_objs["pretrained_netvlad"].model.pool(features_high)
 
                     Loss_vlad = self.vlad_mse_loss(vectors_low, vectors_high).detach().cpu() * B * 100
                     Loss_sp = self.similarity_loss(features_low, features_high).detach().cpu() / 1000

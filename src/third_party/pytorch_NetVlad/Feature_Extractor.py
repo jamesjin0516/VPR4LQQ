@@ -1,8 +1,5 @@
-import sys
 from os.path import join,exists, isfile
-sys.path.append(join(sys.path[0],'third_party','pytorch_NetVlad'))
-sys.path.append(join(sys.path[0],'..','third_party','pytorch_NetVlad'))
-import netvlad
+from . import netvlad
 import torchvision.transforms as transforms
 import json
 import torch
@@ -93,15 +90,8 @@ class NetVladFeatureExtractor:
             print("=> no checkpoint found at '{}'".format(resume_ckpt))
             exit()
 
-    def feature(self, image):
-        if self.input_transform:
-            image = self.input_transform(image)
-            # batch size 1
-            image = torch.stack([image])
-
+    def __call__(self, images):
         with torch.no_grad():
-            image_encoding = self.model.encoder(input)
+            image_encoding = self.model.encoder(images)
             vlad_encoding = self.model.pool(image_encoding)
-            del input
-            torch.cuda.empty_cache()
-            return vlad_encoding.detach().cpu().numpy()
+            return vlad_encoding.detach().cpu()

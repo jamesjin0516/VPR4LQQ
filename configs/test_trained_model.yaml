@@ -6,7 +6,7 @@ model_IO:
   logs_path: logs/tensorboard_logs
 
 test_data:
-  name: "tokyo247"
+  name: "msls"
   resolution:    # 2 number list enforces dimension; 1 number chooses height and preserves aspect ratio
     180p: 180    # [height, width]
     240p: 240
@@ -52,6 +52,7 @@ vpr:
   threshold:
     - 25
   global_extractor:
+    # If netvlad is used, then remaining methods are ignored given GlobalExtractor preprocess=False
     netvlad:
       use: true
       ckpt_path:  'parameters/netvlad/paper/checkpoints'
@@ -60,3 +61,17 @@ vpr:
       pooling:  'netvlad'
       vladv2: false
       nocuda: false
+    MixVPR:
+      use: true
+      ckpt_path: 'parameters/MixVPR/ckpts/resnet50_MixVPR_4096_channels(1024)_rows(4).ckpt'
+      resized_img_size: [320, 320]    # For MixVPR's pretrained weights, this value cannot change
+      cuda: true
+    AnyLoc:
+      use: true
+      max_image_size: 1024    # To prevent out of memory
+      desc_layer: 31
+      desc_facet: 'value'    # one of "query", "key", "value", "token"
+      num_clusters: 32
+      domain: 'indoor'    # one of "aerial", "indoor", "urban"
+      cache_dir: 'parameters/AnyLoc/demo/cache'
+      cuda: true

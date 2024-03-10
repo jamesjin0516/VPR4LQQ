@@ -13,3 +13,9 @@ tokyo247:
   database: database
   query: queries
   img_ext: jpg
+
+msls:
+  subset: test
+  database: database
+  query: queries
+  img_ext: jpg

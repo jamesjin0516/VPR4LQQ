@@ -1,13 +1,8 @@
 # Import necessary libraries
-import sys
 from os.path import join, exists, basename, splitext
 from os import listdir, makedirs, rename
-# Append the parent directory to sys.path to allow importing from there
-sys.path.append(join(sys.path[0], '..'))
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from sklearn.cluster import KMeans
-from sklearn.model_selection import train_test_split
 import cv2
 from PIL import Image
 import torch
@@ -15,13 +10,11 @@ import torchvision.transforms as transforms
 from tqdm import tqdm
 import h5py
 # Import NetVladFeatureExtractor from a third-party library
-from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
+from feature.Global_Extractors import GlobalExtractors
 import argparse
 import yaml
-import json
 import random
-import scipy.io
-import shutil
+
 
 # Function to define input transformations for images
 def input_transform():
@@ -32,8 +25,8 @@ def input_transform():
     ])
 
 # Function to extract descriptors from images using a global feature extractor
-def extract_descriptors(image_folder, global_extractor):
-    hfile_path = join(image_folder, 'global_descriptor.h5')
+def extract_descriptors(image_folder, global_extractor, model):
+    hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
     if not exists(hfile_path):
         hfile = h5py.File(hfile_path, 'a')
         grp = hfile.create_group(basename(image_folder))
@@ -43,32 +36,37 @@ def extract_descriptors(image_folder, global_extractor):
         image_high_names = set(sorted(listdir(images_high_path)))
         for i, im in tqdm(enumerate(image_high_names), total=len(image_high_names)):
             image = Image.open(join(images_high_path, im))
-            if i % 50 == 0 or i == len(image_high_names) - 1 or (len(images_list) > 0 and images_list[-1].size != image.size):
+            if image.mode != "RGB": image = image.convert("RGB")
+            image = input_transform()(image)
+            if i % 1 == 0 or i == len(image_high_names) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
                 if i > 0:
                     image_ = torch.stack(images_list)
-                    feature = global_extractor.encoder(image_)
-                    vector = global_extractor.pool(feature).detach().cpu()
+                    vector = global_extractor(model, image_)
                     for name, descriptor in zip(images_name, vector):
                         grp.create_dataset(name, data=descriptor)
                     index += vector.size(0)
-                    del image_, feature, vector
+                    del image_, vector
                     torch.cuda.empty_cache()
                 images_list, images_name = [], []
-            image = input_transform()(image)
             images_list.append(image.to(device))
             images_name.append(im)
         hfile.close()
+    else: print(f"{basename(hfile_path)} exists, skipped.")
 
 # Function to find neighbors for each image based on their global descriptors
-def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
-    hfile_path = join(image_folder, 'global_descriptor.h5')
+def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
+    hfile_neighbor_path = join(image_folder, f"neighbors_{model}.h5")
+    if exists(hfile_neighbor_path):
+        print(f"{basename(hfile_neighbor_path)} exists, skipped.")
+        return
+    hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
     hfile = h5py.File(hfile_path, 'r')
     
     names = []
     descriptors = np.empty((len(hfile[basename(image_folder)]), global_descriptor_dim))
     locations = np.empty((len(hfile[basename(image_folder)]), 2))
 
-    for i, (img_name, img_feat) in tqdm(enumerate(hfile[basename(image_folder)].items()), desc='load data', total=len(hfile[basename(image_folder)])):
+    for i, (img_name, img_feat) in tqdm(enumerate(hfile[basename(image_folder)].items()), desc=f"Loading {hfile_path}", total=len(hfile[basename(image_folder)])):
         names.append(img_name)
         locations[i, :] = gt[name_id.index(img_name)]
         descriptors[i, :] = img_feat.__array__()
@@ -91,13 +89,12 @@ def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr,
     batch_size = 1000  # or any other batch size you find suitable
 
     # Open the HDF5 file for storing neighbors
-    hfile_neighbor_path = join(image_folder, 'neighbors.h5')
     hfile = h5py.File(hfile_neighbor_path, 'a')
 
     # Iterate through batches to find neighbors
     num_batches = int(np.ceil(len(names)/batch_size))
 
-    for batch_idx in tqdm(range(num_batches), desc='find neighbor'):
+    for batch_idx in tqdm(range(num_batches), desc=basename(hfile_neighbor_path)):
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, len(names))
         descriptor_batch = descriptors[start_idx:end_idx]
@@ -144,6 +141,7 @@ def process_data(database_path, query_path, resolutions, img_ext):
             makedirs(raw_folder)
         for image in images:
             rename(join(split_path, image), join(raw_folder, image))
+        if split_type == "database": continue
         # Ensure all other resolutions have a cooresponding folder
         for res_name in list(resolutions.keys()):
             image_folder = join(split_path, res_name)
@@ -200,12 +198,7 @@ def process_image_filenames(folder_path, img_ext):
 
 # Main function to run the entire script
 def main(configs, data_info):
-    content = configs['vpr']['global_extractor']['netvlad']
-    teacher_model = NetVladFeatureExtractor(join(configs['root'], content['ckpt_path']), arch=content['arch'],
-                                            num_clusters=content['num_clusters'],
-                                            pooling=content['pooling'], vladv2=content['vladv2'], nocuda=content['nocuda'])
-    teacher_model.model.to(device).eval()
-    
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
     # Assemble the path to where the testing dataset contains database and query folders
     testset = configs['test_data']['name']
     test_info = data_info[testset]
@@ -225,21 +218,28 @@ def main(configs, data_info):
     nonTrivPosDistSqThr = configs['train_conf']['triplet_loss']['nonTrivPosDistSqThr']
     nPosSample = configs['train_conf']['triplet_loss']['nPosSample']
 
-    for image_folder in gt_info.keys():
-        print(f'======================Processing {image_folder}')
-        
-        image_folder_path = join(testset_path, test_info[image_folder])
-        
-        if not exists(join(image_folder_path, 'neighbors.h5')):
-            extract_descriptors(image_folder_path, teacher_model.model)
-            find_neighbors(gt_info[image_folder]["filenames"], image_folder_path, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
+    # Generate permutations of image types and vpr methods
+    arguments = []
+    for image_type in gt_info:
+        arguments.extend((image_type, model) for model in global_extractors.models)
+    # Expand permutations into global descriptor extraction parameters
+    descriptor_args = [(join(testset_path, test_info[image_folder]), global_extractors, model) for image_folder, model in arguments]
+    print(f"Extracting global descriptors for each of {set(arg[2] for arg in descriptor_args)} at {set(arg[0] for arg in descriptor_args)}")
+    for arg in descriptor_args:
+        extract_descriptors(*arg)
+    # Similarly assemble find neighbor parameters
+    neighbor_args = [(gt_info[image_folder]["filenames"], join(testset_path, test_info[image_folder]), model, gt_info[image_folder]["gt"], global_descriptor_dim,
+                        posDistThr, nonTrivPosDistSqThr, nPosSample) for image_folder, model in arguments]
+    print(f"Gathering neighbors for each of {set(arg[2] for arg in descriptor_args)} at {set(arg[0] for arg in descriptor_args)}")
+    for arg in neighbor_args:
+        find_neighbors(*arg)
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='../../configs/test_trained_model.yaml')
-    parser.add_argument("-d", "--data_info", type=str, default="../../configs/testing_data.yaml")
+    parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
+    parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
