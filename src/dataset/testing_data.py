@@ -42,7 +42,8 @@ def extract_descriptors(image_folder, global_extractor):
         images_high_path = join(image_folder, 'raw')
         image_high_names = set(sorted(listdir(images_high_path)))
         for i, im in tqdm(enumerate(image_high_names), total=len(image_high_names)):
-            if i % 50 == 0 or i == len(image_high_names) - 1:
+            image = Image.open(join(images_high_path, im))
+            if i % 50 == 0 or i == len(image_high_names) - 1 or (len(images_list) > 0 and images_list[-1].size != image.size):
                 if i > 0:
                     image_ = torch.stack(images_list)
                     feature = global_extractor.encoder(image_)
@@ -52,15 +53,14 @@ def extract_descriptors(image_folder, global_extractor):
                     index += vector.size(0)
                     del image_, feature, vector
                     torch.cuda.empty_cache()
-                images_list = []
-                images_name = []
-            image = input_transform()(Image.open(join(images_high_path, im)))
+                images_list, images_name = [], []
+            image = input_transform()(image)
             images_list.append(image.to(device))
-            images_name.append(f'{im}')
+            images_name.append(im)
         hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
-def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
+def find_neighbors(name_id, image_folder, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
     hfile_path = join(image_folder, 'global_descriptor.h5')
     hfile = h5py.File(hfile_path, 'r')
     
@@ -73,7 +73,7 @@ def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, po
         locations[i, :] = gt[name_id.index(img_name)]
         descriptors[i, :] = img_feat.__array__()
 
-    knn = NearestNeighbors(n_jobs=1)
+    knn = NearestNeighbors(n_jobs=-1)
     knn.fit(gt)
     nontrivial_positives = list(knn.radius_neighbors(gt,
                                                      radius=nonTrivPosDistSqThr,
@@ -113,8 +113,7 @@ def find_neighbors(name_id, image_folder, img_ext, gt, global_descriptor_dim, po
             
             physical_closed = set([str(name_id[ind]).zfill(6) for ind in nontrivial_positives[name_id.index(name)]])
             
-            negtives_ = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(name)]]
-            negtives = [f'{neg}.{img_ext}' for neg in negtives_]
+            negtives = [str(name_id[ind]).zfill(6) for ind in potential_negatives[name_id.index(name)]]
             negtives = random.sample(negtives, 100)
 
             positives = []
@@ -156,7 +155,9 @@ def process_data(database_path, query_path, resolutions, img_ext):
             raw_image_path = join(raw_folder, image)
             image_ = cv2.imread(raw_image_path)
             for resolution, newsize in resolutions.items():
-                resized_image = cv2.resize(image_, tuple(newsize))
+                if isinstance(newsize, int):
+                    newsize = (newsize, int(image_.shape[1] * newsize / image_.shape[0]))
+                resized_image = cv2.resize(image_, tuple(reversed(newsize)))    # cv2.resize expects (width, height)
                 output_image_path = join(split_path, resolution, image)
                 cv2.imwrite(output_image_path, resized_image)
 
@@ -211,14 +212,14 @@ def main(configs, data_info):
     testset_path = join(configs['root'], data_info["testsets_path"], testset, test_info["subset"])
     img_ext = test_info["img_ext"]
     
-    # Parse coordinates from all images directly under the database and query folders of the dataset
-    database_input_path, query_input_path = join(testset_path, test_info["database"]), join(testset_path, test_info["query"])
-    gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(database_input_path, img_ext))),
-               "query": dict(zip(["gt", "filenames"], process_image_filenames(query_input_path, img_ext)))}
-    
     # Divide images into resolutions for each of database and query folders
+    database_input_path, query_input_path = join(testset_path, test_info["database"]), join(testset_path, test_info["query"])
     process_data(database_input_path, query_input_path, configs["test_data"]["resolution"], img_ext)
 
+    # Parse coordinates from all images directly under the database and query folders of the dataset
+    gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(join(database_input_path, "raw"), img_ext))),
+               "query": dict(zip(["gt", "filenames"], process_image_filenames(join(query_input_path, "raw"), img_ext)))}
+    
     global_descriptor_dim = configs['train_conf']['num_cluster']*configs['train_conf']['cluster']['dimension']
     posDistThr = configs['train_conf']['triplet_loss']['posDistThr']
     nonTrivPosDistSqThr = configs['train_conf']['triplet_loss']['nonTrivPosDistSqThr']
@@ -231,19 +232,10 @@ def main(configs, data_info):
         
         if not exists(join(image_folder_path, 'neighbors.h5')):
             extract_descriptors(image_folder_path, teacher_model.model)
-            find_neighbors(gt_info[image_folder]["filenames"], image_folder_path, img_ext, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
+            find_neighbors(gt_info[image_folder]["filenames"], image_folder_path, gt_info[image_folder]["gt"], global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample)
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
-    
-    import debugpy
-    debugpy.listen(('0.0.0.0', 5678))  # Use an appropriate port
-
-    # Wait for the debugger to attach
-    print("Waiting for debugger to attach...")
-    debugpy.wait_for_client()
-    
-    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../../configs/test_trained_model.yaml')

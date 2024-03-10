@@ -1,23 +1,28 @@
 root: '/scratch/gj2148/VPR4LQQ'
+test_runs: 5
 
 model_IO:
   weights_path: parameters/RA_VPR
   logs_path: logs/tensorboard_logs
 
 test_data:
-  name: "st_lucia"
-  resolution:
-    180p: [180,240]
-    240p: [240,320]
-    360p: [360,480]
-    480p: [480,640]
+  name: "tokyo247"
+  resolution:    # 2 number list enforces dimension; 1 number chooses height and preserves aspect ratio
+    180p: 180    # [height, width]
+    240p: 240
+    360p: 360
+    480p: 480
+  test_res: 240p
 
 train_conf:
+  batch_size: 15
+  num_worker: 5
   num_cluster: 64
   lr: 0.000001
   lr_decay: 0.000000000002
   exponential_gamma: 0.99999
   data:
+    name: pitts250k
     resolution: 180p
     qp: -1
   cluster:
@@ -25,7 +30,7 @@ train_conf:
     descriptor_per_image: 100
     dimension: 512
   loss:
-    distill: true
+    distill: false
     vlad: false
     triplet: true
   triplet_loss:

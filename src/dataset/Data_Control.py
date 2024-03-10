@@ -97,15 +97,17 @@ class UNav_dataset(Dataset):
 class Pitts250k_dataset(Dataset):
     device='cuda' if torch.cuda.is_available() else 'cpu'
     def __init__(self,image_folder,resolution,neighbor_file,gt,image_id,**config):
-        self.gt=gt
-        self.id=image_id
+        self.gt=gt # (1000, 2)
+        self.id=image_id # 1000
         self.neighbor_file=neighbor_file
-        self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample']
+        self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample'] # 1, 5
         self.high_resolution='raw'
-        self.resolution=resolution
+        self.resolution=resolution # 180p
         self.__prepare_data(image_folder)
         
     def __getitem__(self, index):
+        # concat image, postive image, and negative images
+        print('starting to get item from Pitts250k_dataset')
         high_image_set,low_image_set=self.data[index]
         image_high_path,positives_high,negtives_high=high_image_set
         image_low_path,positives_low,negtives_low=low_image_set
@@ -116,11 +118,17 @@ class Pitts250k_dataset(Dataset):
         for im in [image_low_path]+positives_low+negtives_low:
             images_low_path.append(im)
             images_low.append(self.input_transform()(Image.open(im)))
-            locations.append(self.gt[self.id.index(int(basename(im).replace('.jpg','')))])
+            locations.append(self.gt[self.id.index(int(basename(im).replace('.jpg','')))]) # gt corresponding to the image path
         images_low=torch.stack(images_low)
         locations=np.array(locations)
         locations=torch.tensor(locations)
+        print(images_high.shape, images_low.shape, images_low_path, locations.shape)
+        breakpoint()
         return [images_high,images_low,images_low_path,locations]
+        # images_high: (7, 3, 480, 640)
+        # images_low: (7, 3, 180, 240)
+        # images_low_path: 7 (list)
+        # locations: (7, 2)
     
     def input_transform(self):
         return transforms.Compose([
@@ -142,20 +150,21 @@ class Pitts250k_dataset(Dataset):
             yaw_list=listdir(pitch_folder)
             for yaw in sorted(yaw_list):
                 images_root=join(pitch_folder,yaw)
-                images_low_path=join(images_root,self.resolution)
-                images_high_path=join(images_root,'raw')
+                images_low_path=join(images_root,self.resolution) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/180p'
+                images_high_path=join(images_root,'raw') # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw'
 
                 images_low=listdir(images_low_path)
                 for image in images_low:
                     name=f'{pitch}+{yaw}+{image}'
                     if name in self.neighbor_file:
-                        image_high_path=join(images_high_path,image)
+                        image_high_path=join(images_high_path,image) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
                         image_low_path=join(images_low_path,image)
                         positives_high,negtives_high=[],[]
                         positives_low,negtives_low=[],[]
                         ind=0
-                        positives_pool=self.neighbor_file[name]['positives'][:]
-                        negtives_pool=self.neighbor_file[name]['negtives'][:]
+                        # key: how to get the neighbor thing in the new dataset
+                        positives_pool=self.neighbor_file[name]['positives'][:] #(20,)
+                        negtives_pool=self.neighbor_file[name]['negtives'][:] #(100,)
                         while len(positives_high)<self.nPosSample:
                             pitch_,yaw_,name_=positives_pool[ind].decode('utf-8').split('+')
                             positive_high=join(image_folder,pitch_,yaw_,self.high_resolution,name_)
@@ -179,11 +188,16 @@ class Pitts250k_dataset(Dataset):
                                 break
                         if len(positives_high)==self.nPosSample and len(negtives_high)==self.nNegSample:
                             self.data.append([[image_high_path,positives_high,negtives_high],[image_low_path,positives_low,negtives_low]])
+                        # image_high_path: '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
+                        # positives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006419.jpg']
+                        # negtives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/210/raw/006352.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/240/raw/003258.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/300/raw/008770.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/180/raw/006603.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/060/raw/008609.jpg']
+                        # same pattern for low
+                        
 
 def load_pitts250k_data(data,config):
     image_folder=data['image_folder']
-    gt=data['utm']
-    image_id=data['id']
+    gt=data['utm'] # (1000, 2) eg. [585001.41335051, 4477058.99275442]
+    image_id=data['id'] # 1000
 
     neighbor_file = h5py.File(join(image_folder,'neighbors.h5'), 'r')
 
