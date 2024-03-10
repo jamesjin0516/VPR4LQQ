@@ -54,6 +54,8 @@ def extract_descriptors(image_folder, global_extractor):
                     del image_, feature, vector
                     torch.cuda.empty_cache()
                 images_list, images_name = [], []
+            if image.mode != "RGB":
+                image = image.convert('RGB')
             image = input_transform()(image)
             images_list.append(image.to(device))
             images_name.append(im)

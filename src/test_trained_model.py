@@ -244,9 +244,23 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
+
+    parser.add_argument("--distill", type=bool, help="Enable or disable distill loss.")
+    parser.add_argument("--vlad", type=bool, help="Enable or disable VLAD loss.")
+    parser.add_argument("--triplet", type=bool, help="Enable or disable triplet loss.")
+
     args = parser.parse_args()
+
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+
+    if args.distill is not None:
+        config['train_conf']["loss"]["distill"] = args.distill
+    if args.vlad is not None:
+        config['train_conf']["loss"]["vlad"] = args.vlad
+    if args.triplet is not None:
+        config['train_conf']["loss"]["triplet"] = args.triplet
+
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
     main(config, data_info)
