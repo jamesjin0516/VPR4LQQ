@@ -19,3 +19,27 @@ msls:
   database: database
   query: queries
   img_ext: jpg
+
+amstertime:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+eynsham:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+sped:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+san_francisco:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg

@@ -9,7 +9,6 @@ import torch
 import torchvision.transforms as transforms
 from tqdm import tqdm
 import h5py
-# Import NetVladFeatureExtractor from a third-party library
 from feature.Global_Extractors import GlobalExtractors
 import argparse
 import yaml
@@ -25,40 +24,49 @@ def input_transform():
     ])
 
 # Function to extract descriptors from images using a global feature extractor
-def extract_descriptors(image_folder, global_extractor, model):
+def extract_descriptors(image_folder, model):
     hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
-    if not exists(hfile_path):
-        hfile = h5py.File(hfile_path, 'a')
+    hfile, grp_name = h5py.File(hfile_path, 'a'), basename(image_folder)
+    # Retrieve already processed images, if any
+    if grp_name in hfile:
+        existing_imgs = set(hfile[grp_name])
+        grp = hfile[grp_name]
+    else:
+        existing_imgs = set()
         grp = hfile.create_group(basename(image_folder))
-        index = 0
-        
-        images_high_path = join(image_folder, 'raw')
-        image_high_names = set(sorted(listdir(images_high_path)))
-        for i, im in tqdm(enumerate(image_high_names), total=len(image_high_names)):
-            image = Image.open(join(images_high_path, im))
-            if image.mode != "RGB": image = image.convert("RGB")
-            image = input_transform()(image)
-            if i % 1 == 0 or i == len(image_high_names) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
-                if i > 0:
-                    image_ = torch.stack(images_list)
-                    vector = global_extractor(model, image_)
-                    for name, descriptor in zip(images_name, vector):
-                        grp.create_dataset(name, data=descriptor)
-                    index += vector.size(0)
-                    del image_, vector
-                    torch.cuda.empty_cache()
-                images_list, images_name = [], []
-            images_list.append(image.to(device))
-            images_name.append(im)
-        hfile.close()
-    else: print(f"{basename(hfile_path)} exists, skipped.")
+
+    # Ignore already processed images
+    images_high_path = join(image_folder, 'raw')
+    image_high_names = set(listdir(images_high_path))
+    images_to_add = image_high_names.difference(existing_imgs)
+
+    if len(images_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
+    images_list, images_name = [], []
+    for i, im in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
+        image = Image.open(join(images_high_path, im))
+        if image.mode != "RGB": image = image.convert("RGB")
+        image = input_transform()(image)
+        images_list.append(image.to(device))
+        images_name.append(im)
+        # If 15 images read, no more images to read, or image resolution changed, compute descriptors
+        if (i + 1) % 15 == 0 or i == len(images_to_add) - 1:
+            if (len(images_list) > 1 and images_list[-2].shape != image.shape):
+                grp.create_dataset(im, data=global_extractors(model, image.unsqueeze(0)).squeeze(0))
+                batched = torch.stack(images_list[:-1])
+            else:
+                batched = torch.stack(images_list)
+            vector = global_extractors(model, batched)
+            for name, descriptor in zip(images_name, vector):
+                grp.create_dataset(name, data=descriptor)
+            del batched, vector
+            torch.cuda.empty_cache()
+            images_list.clear()
+            images_name.clear()
+    hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
 def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
     hfile_neighbor_path = join(image_folder, f"neighbors_{model}.h5")
-    if exists(hfile_neighbor_path):
-        print(f"{basename(hfile_neighbor_path)} exists, skipped.")
-        return
     hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
     hfile = h5py.File(hfile_path, 'r')
     
@@ -66,10 +74,11 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
     descriptors = np.empty((len(hfile[basename(image_folder)]), global_descriptor_dim))
     locations = np.empty((len(hfile[basename(image_folder)]), 2))
 
-    for i, (img_name, img_feat) in tqdm(enumerate(hfile[basename(image_folder)].items()), desc=f"Loading {hfile_path}", total=len(hfile[basename(image_folder)])):
+    for i, (img_name, img_feat) in tqdm(enumerate(hfile[basename(image_folder)].items()), desc=f"Loading {basename(image_folder)} {basename(hfile_path)}", total=len(hfile[basename(image_folder)])):
         names.append(img_name)
         locations[i, :] = gt[name_id.index(img_name)]
         descriptors[i, :] = img_feat.__array__()
+    hfile.close()
 
     knn = NearestNeighbors(n_jobs=-1)
     knn.fit(gt)
@@ -90,11 +99,14 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
 
     # Open the HDF5 file for storing neighbors
     hfile = h5py.File(hfile_neighbor_path, 'a')
+    existing_indices = set(names.index(name) for name in set(hfile))
+    indices_to_add = set(range(len(names))).difference(existing_indices)
 
     # Iterate through batches to find neighbors
     num_batches = int(np.ceil(len(names)/batch_size))
-
-    for batch_idx in tqdm(range(num_batches), desc=basename(hfile_neighbor_path)):
+    
+    if len(indices_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_neighbor_path)} already contains all images.")
+    for batch_idx in tqdm(range(num_batches), desc=f"{basename(image_folder)} {basename(hfile_neighbor_path)}"):
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, len(names))
         descriptor_batch = descriptors[start_idx:end_idx]
@@ -103,7 +115,8 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
         for i in range(descriptor_batch.shape[0]):
             sim_batch[i, start_idx + i] = 0
         
-        for i in range(descriptor_batch.shape[0]):
+        # Between start and end index, keep only uncalculated indices (ie. the corresponding image isn't in neighbors file)
+        for i in [ind - start_idx for ind in indices_to_add.intersection(range(start_idx, end_idx))]:
             name = names[start_idx + i]
             sim = sim_batch[i]
             feature_closed = torch.topk(sim, descriptors.size(0), dim=0).indices.numpy()
@@ -198,7 +211,6 @@ def process_image_filenames(folder_path, img_ext):
 
 # Main function to run the entire script
 def main(configs, data_info):
-    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
     # Assemble the path to where the testing dataset contains database and query folders
     testset = configs['test_data']['name']
     test_info = data_info[testset]
@@ -213,7 +225,6 @@ def main(configs, data_info):
     gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(join(database_input_path, "raw"), img_ext))),
                "query": dict(zip(["gt", "filenames"], process_image_filenames(join(query_input_path, "raw"), img_ext)))}
     
-    global_descriptor_dim = configs['train_conf']['num_cluster']*configs['train_conf']['cluster']['dimension']
     posDistThr = configs['train_conf']['triplet_loss']['posDistThr']
     nonTrivPosDistSqThr = configs['train_conf']['triplet_loss']['nonTrivPosDistSqThr']
     nPosSample = configs['train_conf']['triplet_loss']['nPosSample']
@@ -223,14 +234,14 @@ def main(configs, data_info):
     for image_type in gt_info:
         arguments.extend((image_type, model) for model in global_extractors.models)
     # Expand permutations into global descriptor extraction parameters
-    descriptor_args = [(join(testset_path, test_info[image_folder]), global_extractors, model) for image_folder, model in arguments]
-    print(f"Extracting global descriptors for each of {set(arg[2] for arg in descriptor_args)} at {set(arg[0] for arg in descriptor_args)}")
+    descriptor_args = [(join(testset_path, test_info[image_folder]), model) for image_folder, model in arguments]
+    print(f"Extracting global descriptors for each of {[arg[1] for arg in arguments]} at {testset}'s {[arg[0] for arg in arguments]}")
     for arg in descriptor_args:
         extract_descriptors(*arg)
     # Similarly assemble find neighbor parameters
-    neighbor_args = [(gt_info[image_folder]["filenames"], join(testset_path, test_info[image_folder]), model, gt_info[image_folder]["gt"], global_descriptor_dim,
-                        posDistThr, nonTrivPosDistSqThr, nPosSample) for image_folder, model in arguments]
-    print(f"Gathering neighbors for each of {set(arg[2] for arg in descriptor_args)} at {set(arg[0] for arg in descriptor_args)}")
+    neighbor_args = [(gt_info[image_folder]["filenames"], join(testset_path, test_info[image_folder]), model, gt_info[image_folder]["gt"],
+                      global_extractors.feature_length(model), posDistThr, nonTrivPosDistSqThr, nPosSample) for image_folder, model in arguments]
+    print(f"Gathering neighbors for each of {[arg[1] for arg in arguments]} at {testset}'s {[arg[0] for arg in arguments]}")
     for arg in neighbor_args:
         find_neighbors(*arg)
 
@@ -242,7 +253,8 @@ if __name__ == '__main__':
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+        configs = yaml.safe_load(f)
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
-    main(config, data_info)
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
+    main(configs, data_info)

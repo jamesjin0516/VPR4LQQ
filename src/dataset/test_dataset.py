@@ -75,12 +75,18 @@ class TestDataset(Dataset):
         # Only stack image tensors if all have the same shape; otherwise keep as list of tensors
         img_same_res = True
         for imp in [image_high_path] + positives_high + negtives_high:
-            im = self.input_transform(Image.open(imp)).unsqueeze(0)
+            im = Image.open(imp)
+            if im.mode != 'RGB':
+                im = im.convert('RGB')
+            im = self.input_transform(im).unsqueeze(0)
             if len(images_high) > 0 and im.shape != images_high[-1].shape: img_same_res = False
             images_high.append(im)
         if img_same_res: images_high = torch.stack(images_high)
         for imp in [image_low_path] + positives_low + negtives_low:
-            im = self.input_transform(Image.open(imp)).unsqueeze(0)
+            im = Image.open(imp)
+            if im.mode != 'RGB':
+                im = im.convert('RGB')
+            im = self.input_transform(im).unsqueeze(0)
             images_low.append(im)
             locations.append(read_coordinate(imp))
         if img_same_res: images_low = torch.stack(images_low)

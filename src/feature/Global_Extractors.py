@@ -50,3 +50,6 @@ class GlobalExtractors:
     @property
     def models(self):
         return list(self.models_objs.keys())
+
+    def feature_length(self, model):
+        return self.models_objs[model].feature_length

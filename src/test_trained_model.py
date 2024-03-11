@@ -52,18 +52,22 @@ class VPRTester:
     def load_database_images(self, data_folders):
         image_folder = data_folders["database"]
 
-        global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')['database']
-        
-        descriptors=torch.empty((len(global_descriptors),self.train_conf["cluster"]["dimension"] * self.train_conf["num_cluster"]))
-        locations=torch.empty((len(global_descriptors),2))
+        g_desc_files = {model: h5py.File(join(image_folder, f"global_descriptor_{model}.h5"), 'r') for model in self.g_extr.models}
+        num_images = len(g_desc_files[list(g_desc_files.keys())[0]]["database"])
+        assert all([num_images == len(file["database"]) for file in g_desc_files.values()]), f"Database global descriptors for {self.g_extr.models} have different lengths (first file has length {num_images})."
+        descriptors = {model: torch.empty((num_images, self.g_extr.feature_length(model))) for model in self.g_extr.models}
+        locations = torch.empty((num_images, 2))
         names = []
-        for i,(name,d) in enumerate(tqdm(global_descriptors.items(), desc="Reading database info")):
-            splitted = name.split('@')
-            utm_east_str, utm_north_str = splitted[1], splitted[2]
-            image_path=join(image_folder, 'raw', name)
-            names.append(image_path)
-            descriptors[i]=torch.tensor(d.__array__())
-            locations[i]=torch.tensor([float(utm_east_str), float(utm_north_str)], dtype=torch.float32)
+        for file_ind, (model, g_desc_file) in enumerate(g_desc_files):
+            for i, (name, d) in enumerate(tqdm(g_desc_file["database"].items(), desc=f"Reading database info for {model}")):
+                if file_ind == 0:
+                    splitted = name.split('@')
+                    utm_east_str, utm_north_str = splitted[1], splitted[2]
+                    image_path = join(image_folder, 'raw', name)
+                    names.append(image_path)
+                    locations[i] = torch.tensor([float(utm_east_str), float(utm_north_str)], dtype=torch.float32)
+                descriptors[model][i] = torch.tensor(d.__array__())
+            g_desc_file.close()
 
         return {'images_path': names, 'descriptors': descriptors, 'locations': locations}
     
@@ -138,7 +142,7 @@ class VPRTester:
                                        for model in recall_score.keys()}
 
                 for model, vector_low in vectors_low.items():
-                    recall_score[model] += self.vpr_examing(vector_low, self.database_images_set['descriptors'], locations, self.database_images_set['locations'])
+                    recall_score[model] += self.vpr_examing(vector_low, self.database_images_set['descriptors'][model], locations, self.database_images_set['locations'])
                 del images_high, images_low, locations, vectors_low
 
             recall_rate = {model: recall_score[model] / len(self.query_images_set) for model in recall_score.keys()}
@@ -243,9 +247,23 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
+
+    parser.add_argument("--distill", type=bool, help="Enable or disable distill loss.")
+    parser.add_argument("--vlad", type=bool, help="Enable or disable VLAD loss.")
+    parser.add_argument("--triplet", type=bool, help="Enable or disable triplet loss.")
+
     args = parser.parse_args()
+
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+
+    if args.distill is not None:
+        config['train_conf']["loss"]["distill"] = args.distill
+    if args.vlad is not None:
+        config['train_conf']["loss"]["vlad"] = args.vlad
+    if args.triplet is not None:
+        config['train_conf']["loss"]["triplet"] = args.triplet
+
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
     main(config, data_info)

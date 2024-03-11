@@ -6,7 +6,7 @@ model_IO:
   logs_path: logs/tensorboard_logs
 
 test_data:
-  name: "msls"
+  name: "san_francisco"
   resolution:    # 2 number list enforces dimension; 1 number chooses height and preserves aspect ratio
     180p: 180    # [height, width]
     240p: 240
@@ -32,7 +32,7 @@ train_conf:
   loss:
     distill: false
     vlad: false
-    triplet: true
+    triplet: false
   triplet_loss:
     posDistThr: 30
     nonTrivPosDistSqThr: 20

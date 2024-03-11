@@ -17,6 +17,7 @@ class NetVladFeatureExtractor:
     def __init__(self, ckpt_path, type=None, arch='vgg16', num_clusters=64, pooling='netvlad', vladv2=False, nocuda=False,
                  input_transform=input_transform()):
         self.input_transform = input_transform
+        self.num_clusters = num_clusters
 
         flag_file = join(ckpt_path, 'flags.json')
         if exists(flag_file):
@@ -24,8 +25,8 @@ class NetVladFeatureExtractor:
                 stored_flags = json.load(f)
                 stored_num_clusters = stored_flags.get('num_clusters')
                 if stored_num_clusters is not None:
-                    num_clusters = stored_num_clusters
-                    print(f'restore num_clusters to : {num_clusters}')
+                    self.num_clusters = stored_num_clusters
+                    print(f'restore num_clusters to : {self.num_clusters}')
                 stored_pooling = stored_flags.get('pooling')
                 if stored_pooling is not None:
                     pooling = stored_pooling
@@ -40,7 +41,7 @@ class NetVladFeatureExtractor:
         print('===> Building model')
 
         if arch.lower() == 'alexnet':
-            encoder_dim = 256
+            self.encoder_dim = 256
             encoder = models.alexnet(pretrained=True)
             # capture only features and remove last relu and maxpool
             layers = list(encoder.features.children())[:-2]
@@ -51,7 +52,7 @@ class NetVladFeatureExtractor:
                     p.requires_grad = False
 
         elif arch.lower() == 'vgg16':
-            encoder_dim = 512
+            self.encoder_dim = 512
             encoder = models.vgg16(pretrained=True)
             # capture only feature part and remove last relu and maxpool
             layers = list(encoder.features.children())[:-2]
@@ -66,7 +67,7 @@ class NetVladFeatureExtractor:
         self.model.add_module('encoder', encoder)
 
         if pooling.lower() == 'netvlad':
-            net_vlad = netvlad.NetVLAD(num_clusters=num_clusters, dim=encoder_dim, vladv2=vladv2)
+            net_vlad = netvlad.NetVLAD(num_clusters=self.num_clusters, dim=self.encoder_dim, vladv2=vladv2)
             self.model.add_module('pool', net_vlad)
         else:
             raise ValueError('Unknown pooling type: ' + pooling)
@@ -95,3 +96,6 @@ class NetVladFeatureExtractor:
             image_encoding = self.model.encoder(images)
             vlad_encoding = self.model.pool(image_encoding)
             return vlad_encoding.detach().cpu()
+    
+    @property
+    def feature_length(self): return self.encoder_dim * self.num_clusters
