@@ -2,12 +2,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --time=2:00:00
+#SBATCH --time=20:00:00
 #SBATCH --mem=60GB
 #SBATCH --gres=gpu:1
-#SBATCH --job-name=td_sanfrancisco
+#SBATCH --job-name=td_svox
 #SBATCH --mail-type=NONE
-#SBATCH --output=/scratch/lg3490/VPR4LQQ/testing_data_sanfrancisco_generation.out
+#SBATCH --output=/scratch/lg3490/VPR4LQQ/testing_data_svox_generation.out
 
 module purge
 

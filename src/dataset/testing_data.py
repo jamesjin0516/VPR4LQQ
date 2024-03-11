@@ -146,6 +146,8 @@ def process_data(database_path, query_path, resolutions, img_ext):
             makedirs(raw_folder)
         for image in images:
             rename(join(split_path, image), join(raw_folder, image))
+        if split_type == "database":
+            continue
         # Ensure all other resolutions have a cooresponding folder
         for res_name in list(resolutions.keys()):
             image_folder = join(split_path, res_name)

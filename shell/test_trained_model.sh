@@ -6,9 +6,9 @@
 #SBATCH --time=2:00:00
 #SBATCH --mem=20GB
 #SBATCH --gres=gpu:1
-#SBATCH --job-name=san_francisco
+#SBATCH --job-name=svox
 #SBATCH --mail-type=NONE
-#SBATCH --output=/scratch/lg3490/VPR4LQQ/testing_data_sanfrancisco.out
+#SBATCH --output=/scratch/lg3490/VPR4LQQ/testing_data_svox.out
 
 
 module purge
