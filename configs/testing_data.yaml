@@ -43,3 +43,15 @@ san_francisco:
   database: database
   query: queries
   img_ext: jpg
+
+Nordland:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+svox:
+  subset: images/test
+  database: gallery
+  query: queries
+  img_ext: jpg

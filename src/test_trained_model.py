@@ -58,7 +58,7 @@ class VPRTester:
         descriptors = {model: torch.empty((num_images, self.g_extr.feature_length(model))) for model in self.g_extr.models}
         locations = torch.empty((num_images, 2))
         names = []
-        for file_ind, (model, g_desc_file) in enumerate(g_desc_files):
+        for file_ind, (model, g_desc_file) in enumerate(g_desc_files.items()):
             for i, (name, d) in enumerate(tqdm(g_desc_file["database"].items(), desc=f"Reading database info for {model}")):
                 if file_ind == 0:
                     splitted = name.split('@')

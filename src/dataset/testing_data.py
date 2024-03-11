@@ -41,27 +41,23 @@ def extract_descriptors(image_folder, model):
     images_to_add = image_high_names.difference(existing_imgs)
 
     if len(images_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
-    images_list, images_name = [], []
     for i, im in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
         image = Image.open(join(images_high_path, im))
         if image.mode != "RGB": image = image.convert("RGB")
         image = input_transform()(image)
+        # If 5 images read, no more images to read, or image resolution changed, compute descriptors
+        if i % 5 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
+            if i > 0:
+                batched_imgs = torch.stack(images_list)
+                vector = global_extractors(model, batched_imgs)
+                for name, descriptor in zip(images_name, vector):
+                    grp.create_dataset(name, data=descriptor)
+                del batched_imgs, vector
+                torch.cuda.empty_cache()
+            images_list, images_name = [], []
         images_list.append(image.to(device))
         images_name.append(im)
-        # If 15 images read, no more images to read, or image resolution changed, compute descriptors
-        if (i + 1) % 15 == 0 or i == len(images_to_add) - 1:
-            if (len(images_list) > 1 and images_list[-2].shape != image.shape):
-                grp.create_dataset(im, data=global_extractors(model, image.unsqueeze(0)).squeeze(0))
-                batched = torch.stack(images_list[:-1])
-            else:
-                batched = torch.stack(images_list)
-            vector = global_extractors(model, batched)
-            for name, descriptor in zip(images_name, vector):
-                grp.create_dataset(name, data=descriptor)
-            del batched, vector
-            torch.cuda.empty_cache()
-            images_list.clear()
-            images_name.clear()
+        if len(images_to_add) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0)).squeeze(0))
     hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
@@ -251,10 +247,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
+    parser.add_argument("--test_set", type=str, required=False)
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         configs = yaml.safe_load(f)
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
+    if args.test_set is not None:
+        configs["test_data"]["name"] = args.test_set
     global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
     main(configs, data_info)
