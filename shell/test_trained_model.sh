@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
-#SBATCH --time=2:00:00
-#SBATCH --mem=20GB
+#SBATCH --time=5:00:00
+#SBATCH --mem=25GB
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=svox
 #SBATCH --mail-type=NONE

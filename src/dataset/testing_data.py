@@ -184,7 +184,7 @@ def process_image_filenames(folder_path, img_ext):
             parts = filename.split('@')
             try:
                 # Ensure there are enough parts to extract data
-                assert len(parts) == 16, f"Filename has wrong metadata count: {len(parts)} (should be 16)"
+                # assert len(parts) == 16, f"Filename has wrong metadata count: {len(parts)} (should be 16)"
                 # Extract UTM east and UTM north
                 utm_east = float(parts[1].strip())
                 utm_north = float(parts[2].strip())

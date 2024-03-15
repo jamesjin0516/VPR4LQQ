@@ -1,5 +1,5 @@
 import argparse
-from os.path import join
+from os.path import join, basename
 import random
 from tensorboardX import SummaryWriter
 import torch
@@ -51,7 +51,7 @@ class VPRTester:
     def load_database_images(self, data_folders):
         image_folder = data_folders["database"]
 
-        global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')['database']
+        global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')[basename(image_folder)]
         
         descriptors=torch.empty((len(global_descriptors),self.train_conf["cluster"]["dimension"] * self.train_conf["num_cluster"]))
         locations=torch.empty((len(global_descriptors),2))

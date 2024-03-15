@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=td_svox
 #SBATCH --mail-type=NONE
-#SBATCH --output=/scratch/lg3490/VPR4LQQ/testing_data_svox_generation.out
+#SBATCH --output=/scratch/lg3490/VPR4LQQ/testing_data_svox_generation_new.out
 
 module purge
 
