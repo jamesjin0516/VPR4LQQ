@@ -57,7 +57,7 @@ def extract_descriptors(image_folder, model):
             images_list, images_name = [], []
         images_list.append(image.to(device))
         images_name.append(im)
-        if len(images_to_add) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0)).squeeze(0))
+    if len(images_list) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0)).squeeze(0))
     hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
@@ -186,9 +186,7 @@ def process_image_filenames(folder_path, img_ext):
             # Split the filename to extract the required information
             parts = filename.split('@')
             try:
-                # Ensure there are enough parts to extract data
-                assert len(parts) == 16, f"Filename has wrong metadata count: {len(parts)} (should be 16)"
-                # Extract UTM east and UTM north
+                # Assume the x and y coordinates of image ground truth is 1st and 2nd component
                 utm_east = float(parts[1].strip())
                 utm_north = float(parts[2].strip())
                 
@@ -231,13 +229,13 @@ def main(configs, data_info):
         arguments.extend((image_type, model) for model in global_extractors.models)
     # Expand permutations into global descriptor extraction parameters
     descriptor_args = [(join(testset_path, test_info[image_folder]), model) for image_folder, model in arguments]
-    print(f"Extracting global descriptors for each of {[arg[1] for arg in arguments]} at {testset}'s {[arg[0] for arg in arguments]}")
+    print(f"Extracting global descriptors of {testset} for each of {global_extractors.models}")
     for arg in descriptor_args:
         extract_descriptors(*arg)
     # Similarly assemble find neighbor parameters
     neighbor_args = [(gt_info[image_folder]["filenames"], join(testset_path, test_info[image_folder]), model, gt_info[image_folder]["gt"],
                       global_extractors.feature_length(model), posDistThr, nonTrivPosDistSqThr, nPosSample) for image_folder, model in arguments]
-    print(f"Gathering neighbors for each of {[arg[1] for arg in arguments]} at {testset}'s {[arg[0] for arg in arguments]}")
+    print(f"Gathering neighbors of {testset} for each of {global_extractors.models}")
     for arg in neighbor_args:
         find_neighbors(*arg)
 
@@ -247,7 +245,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
-    parser.add_argument("--test_set", type=str, required=False)
+    parser.add_argument("--test_set", type=str, help="Name of dataset to use")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         configs = yaml.safe_load(f)

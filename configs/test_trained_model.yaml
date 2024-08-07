@@ -1,5 +1,6 @@
-root: '/scratch/gj2148/VPR4LQQ'
+root: '/mnt/data/VPR4LQQ'
 test_runs: 5
+begin_run: 1
 
 model_IO:
   weights_path: parameters/RA_VPR
@@ -74,4 +75,9 @@ vpr:
       num_clusters: 32
       domain: 'indoor'    # one of "aerial", "indoor", "urban"
       cache_dir: 'parameters/AnyLoc/demo/cache'
+      cuda: true
+    DinoV2Salad:
+      use: true
+      max_image_size: 1024    # To prevent out of memory
+      ckpt_path: 'parameters/DinoV2Salad/ckpts/dino_salad.ckpt'
       cuda: true

@@ -1,5 +1,5 @@
 import argparse
-from os.path import join
+from os.path import basename, join
 import random
 from tensorboardX import SummaryWriter
 import torch
@@ -53,13 +53,13 @@ class VPRTester:
         image_folder = data_folders["database"]
 
         g_desc_files = {model: h5py.File(join(image_folder, f"global_descriptor_{model}.h5"), 'r') for model in self.g_extr.models}
-        num_images = len(g_desc_files[list(g_desc_files.keys())[0]]["database"])
-        assert all([num_images == len(file["database"]) for file in g_desc_files.values()]), f"Database global descriptors for {self.g_extr.models} have different lengths (first file has length {num_images})."
+        num_images = len(g_desc_files[list(g_desc_files.keys())[0]][basename(image_folder)])
+        assert all([num_images == len(file[basename(image_folder)]) for file in g_desc_files.values()]), f"Database global descriptors for {self.g_extr.models} have different lengths (first file has length {num_images})."
         descriptors = {model: torch.empty((num_images, self.g_extr.feature_length(model))) for model in self.g_extr.models}
         locations = torch.empty((num_images, 2))
         names = []
         for file_ind, (model, g_desc_file) in enumerate(g_desc_files.items()):
-            for i, (name, d) in enumerate(tqdm(g_desc_file["database"].items(), desc=f"Reading database info for {model}")):
+            for i, (name, d) in enumerate(tqdm(g_desc_file[basename(image_folder)].items(), desc=f"Reading database info for {model}")):
                 if file_ind == 0:
                     splitted = name.split('@')
                     utm_east_str, utm_north_str = splitted[1], splitted[2]
@@ -112,7 +112,7 @@ class VPRTester:
         return success_num
 
     def validation(self, iter_num):
-        print('start vpr examing ...')
+        print(f"Start vpr examing #{iter_num} ...")
 
         random.seed(10)
         
@@ -142,7 +142,7 @@ class VPRTester:
                                        for model in recall_score.keys()}
 
                 for model, vector_low in vectors_low.items():
-                    recall_score[model] += self.vpr_examing(vector_low, self.database_images_set['descriptors'][model], locations, self.database_images_set['locations'])
+                    recall_score[model] += self.vpr_examing(vector_low, self.database_images_set["descriptors"]["pretrained_netvlad" if model == "trained_netvlad" else model], locations, self.database_images_set['locations'])
                 del images_high, images_low, locations, vectors_low
 
             recall_rate = {model: recall_score[model] / len(self.query_images_set) for model in recall_score.keys()}
@@ -239,7 +239,7 @@ def main(configs, data_info):
     
     vpr = VPRTester(root, configs['test_data'], data_folders, configs['vpr'], configs['train_conf'], configs["model_IO"])
 
-    for iter_num in range(1, configs["test_runs"] + 1):
+    for iter_num in range(configs["begin_run"], configs["test_runs"] + 1):
         vpr.validation(iter_num)
     vpr.tensorboard.close()
     
@@ -247,7 +247,8 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
-
+    parser.add_argument("--begin_run", type=int, help="Index for the initial vpr testing run.")
+    parser.add_argument("--test_set", type=str, help="Name of dataset to use")
     parser.add_argument("--distill", type=bool, help="Enable or disable distill loss.")
     parser.add_argument("--vlad", type=bool, help="Enable or disable VLAD loss.")
     parser.add_argument("--triplet", type=bool, help="Enable or disable triplet loss.")
@@ -257,6 +258,10 @@ if __name__=='__main__':
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
+    if args.begin_run is not None:
+        config["begin_run"] = args.begin_run
+    if args.test_set is not None:
+        config["test_data"]["name"] = args.test_set
     if args.distill is not None:
         config['train_conf']["loss"]["distill"] = args.distill
     if args.vlad is not None:

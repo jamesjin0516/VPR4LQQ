@@ -1,18 +1,14 @@
-import sys
 from os.path import join,exists,basename
 from os import listdir,makedirs
-sys.path.append(join(sys.path[0],'..'))
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from sklearn.cluster import KMeans
-from sklearn.model_selection import train_test_split
 import cv2
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
 from tqdm import tqdm
 import h5py
-from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
+from feature.Global_Extractors import GlobalExtractors
 import argparse
 import yaml
 import json
@@ -37,38 +33,50 @@ def input_transform():
                                 std=[0.229, 0.224, 0.225]),
     ])
 
-def extract_descriptors(image_folder,global_extractor):
-    hfile_path=join(image_folder,'global_descriptor.h5')
+def extract_descriptors(image_folder, model, global_extractors):
+    hfile_path=join(image_folder, f'global_descriptor_{model}.h5')
     pitch_list=['000','030']
     yaw_list=[str(i*30).zfill(3) for i in range(12)]
-    if not exists(hfile_path):
-        hfile = h5py.File(hfile_path, 'a')
-        grp = hfile.create_group(basename(image_folder))
-        index=0
-        for pitch in sorted(pitch_list):
-            pitch_folder=join(image_folder,pitch)
-            for ind,yaw in enumerate(sorted(yaw_list)):
-                images_high_path=join(pitch_folder,yaw,'raw')
-                image_high_names = set(sorted(listdir(images_high_path)))
-                for i,im in tqdm(enumerate(image_high_names),desc=f'{str(ind).zfill(2)}/{len(yaw_list)}',total=len(image_high_names)):
-                    if i%50==0 or i==len(image_high_names)-1:
-                        if i>0:
-                            image_=torch.stack(images_list)
-                            feature=global_extractor.encoder(image_)
-                            vector=global_extractor.pool(feature).detach().cpu()
-                            for name, descriptor in zip(images_name,vector):
-                                grp.create_dataset(name, data=descriptor)
-                            index+=vector.size(0)
-                            del image_,feature,vector
-                            torch.cuda.empty_cache()
-                        images_list=[]
-                        images_name=[]
-                    image=input_transform()(Image.open(join(images_high_path,im)))
-                    images_list.append(image.to(device))
-                    images_name.append(f'{pitch}+{yaw}+{im}')
-        hfile.close()
 
-def find_neighbors(image_folder,gt,global_descriptor_dim,posDistThr,nonTrivPosDistSqThr,nPosSample,query=False):
+    hfile, grp_name = h5py.File(hfile_path, 'a'), basename(image_folder)
+    # Retrieve already processed images, if any
+    if grp_name in hfile:
+        existing_imgs = set(hfile[grp_name])
+        grp = hfile[grp_name]
+    else:
+        existing_imgs = set()
+        grp = hfile.create_group(basename(image_folder))
+    
+    image_high_names = []
+    for pitch in sorted(pitch_list):
+        pitch_folder = join(image_folder, pitch)
+        for yaw in sorted(yaw_list):
+            images_high_path = join(pitch_folder, yaw, 'raw')
+            curr_angle_imgs = set(sorted(listdir(images_high_path)))
+            image_high_names.extend([f"{pitch}+{yaw}+{orig_name}" for orig_name in curr_angle_imgs])
+    image_high_names = set(image_high_names)
+    images_to_add = image_high_names.difference(existing_imgs)
+
+    if len(images_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
+    for i, img_identifier in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
+        pitch, yaw, orig_name = img_identifier.split("+")
+        image_high_path = join(image_folder, pitch, yaw, "raw", orig_name)
+        if i % 15 == 0 or i == len(images_to_add) - 1:
+            if i>0:
+                image_=torch.stack(images_list)
+                global_descr = global_extractors(model, image_)
+                for name, descriptor in zip(images_name,global_descr):
+                    grp.create_dataset(name, data=descriptor)
+                del image_, global_descr
+                torch.cuda.empty_cache()
+            images_list, images_name = [], []
+        image = input_transform()(Image.open(image_high_path))
+        images_list.append(image.to(device))
+        images_name.append(img_identifier)
+    if len(images_to_add) == 1: grp.create_dataset(img_identifier, data = global_extractors(model, image.to(device).unsqueeze(0)).squeeze(0))
+    hfile.close()
+
+def find_neighbors(image_folder, gt, global_descriptor_dim, model, posDistThr, nonTrivPosDistSqThr, nPosSample, query=False):
     if query:
         gt_name=join(config['root'],'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_queryID_1000.mat')
         name_id = scipy.io.loadmat(gt_name)['query_id'][0]
@@ -79,7 +87,8 @@ def find_neighbors(image_folder,gt,global_descriptor_dim,posDistThr,nonTrivPosDi
     pitch_list=['000','030']
     yaw_list=[str(i*30).zfill(3) for i in range(12)]
 
-    hfile_path=join(image_folder,'global_descriptor.h5')
+    hfile_neighbor_path = join(image_folder, f"neighbors_{model}.h5")
+    hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
     hfile = h5py.File(hfile_path, 'r')
     
     names=[]
@@ -91,6 +100,7 @@ def find_neighbors(image_folder,gt,global_descriptor_dim,posDistThr,nonTrivPosDi
         pitch,yaw,name=k.replace('.jpg','').split('+')
         locations[i,:]=gt[name_id.index(int(name))]
         descriptors[i,:]=v.__array__()
+    hfile.close()
 
     knn = NearestNeighbors(n_jobs=1)
     knn.fit(gt)
@@ -110,22 +120,28 @@ def find_neighbors(image_folder,gt,global_descriptor_dim,posDistThr,nonTrivPosDi
     batch_size = 1000  # or any other batch size you find suitable
 
     # Open the HDF5 file
-    hfile_neighbor_path = join(image_folder, 'neighbors.h5')
     hfile = h5py.File(hfile_neighbor_path, 'a')
+    existing_indices = set(names.index(name) for name in set(hfile))
+    indices_to_add = set(range(len(names))).difference(existing_indices)
 
     # Iterate through batches
     num_batches = int(np.ceil(len(names)/batch_size))
 
+    if len(indices_to_add) == 0:
+        print(f"{basename(image_folder)} {basename(hfile_neighbor_path)} already contains all images.")
+        hfile.close()
+        return
     for batch_idx in tqdm(range(num_batches), desc='find neighbor'):
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, len(names))
+        if len(indices_to_add.intersection(range(start_idx, end_idx))) == 0: continue
         descriptor_batch = descriptors[start_idx:end_idx]
         # Compute the similarity matrix for the batch against all descriptors
         sim_batch = torch.einsum('id,jd->ij', descriptor_batch, descriptors).float()
         for i in range(descriptor_batch.shape[0]):
             sim_batch[i, start_idx + i] = 0
         
-        for i in range(descriptor_batch.shape[0]):
+        for i in [ind - start_idx for ind in indices_to_add.intersection(range(start_idx, end_idx))]:
             name = names[start_idx + i]
             sim = sim_batch[i]
             feature_closed = torch.topk(sim, descriptors.size(0), dim=0).indices.numpy()
@@ -158,7 +174,7 @@ def find_neighbors(image_folder,gt,global_descriptor_dim,posDistThr,nonTrivPosDi
 
     hfile.close()
 
-def process_data(root,database_gt):
+def process_data(root, split_info_path):
     output_folder=join(root,'logs','pitts250k')
     types=['train','valid','database','query']
     pitch_list=['000','030']
@@ -178,16 +194,13 @@ def process_data(root,database_gt):
 
     database_folders=[str(i).zfill(3) for i in range(11)]
 
-    kmeans = KMeans(n_clusters=10).fit(database_gt)
-    labels = kmeans.labels_
-    train_indices, temp_indices, train_data, temp_data = train_test_split(
-        np.arange(len(database_gt)), database_gt, test_size=0.3, stratify=labels
-    )
-
-    # Split temp_data into validation and test sets using stratified sampling based on temp_labels
-    valid_indices, test_indices, valid_data, test_data = train_test_split(
-        temp_indices, temp_data, test_size=0.7, stratify=labels[temp_indices]
-    )
+    train_images = scipy.io.loadmat(join(split_info_path, "pitts250k_train.mat"))["dbStruct"].item()[1]
+    train_img_names = [image[0].item() for image in train_images]
+    val_struct = scipy.io.loadmat(join(split_info_path, "pitts250k_val.mat"))["dbStruct"].item()
+    val_database_names = [image[0].item() for image in val_struct[1]]
+    val_query_names = [basename(image[0].item()) for image in val_struct[3]]
+    test_images = scipy.io.loadmat(join(split_info_path, "pitts250k_test.mat"))["dbStruct"].item()[1]
+    test_img_names = [image[0].item() for image in test_images]
 
     input_folder=join(root,'data','third_party','pitts250k')
     for folder in database_folders:
@@ -195,15 +208,17 @@ def process_data(root,database_gt):
         images.remove('tar')
         for image in tqdm(images,desc=f'process {folder}',total=len(images)):
             name,pitch,yaw=image.replace('.jpg','').split('_')
-            name_=int(name)
+            pathname = join(folder, image)
+            type = None
             pitch=str((int(pitch.replace('pitch',''))-1)*30).zfill(3)
             yaw=str((int(yaw.replace('yaw',''))-1)*30).zfill(3)
-            if name_ in train_indices:
+            if pathname in train_img_names:
                 type='train'
-            elif name_ in valid_indices:
+            elif pathname in test_img_names:
                 type='valid'
-            elif name_ in test_indices:
+            elif pathname in val_database_names:
                 type='database'
+            if type is None: continue
             input_path=join(input_folder,folder,image)
             output_path=join(output_folder,type,pitch,yaw)
             shutil.copy(input_path,join(output_path,'raw',name+'.jpg'))
@@ -217,35 +232,31 @@ def process_data(root,database_gt):
     images.remove('tar')
     for image in images:
         name,pitch,yaw=image.replace('.jpg','').split('_')
-        name_=int(name)
         pitch=str((int(pitch.replace('pitch',''))-1)*30).zfill(3)
         yaw=str((int(yaw.replace('yaw',''))-1)*30).zfill(3)
-        type='query'
-        input_path=join(query_folder,image)
-        output_path=join(output_folder,type,pitch,yaw)
-        shutil.copy(input_path,join(output_path,'raw',name+'.jpg'))
-        image_=cv2.imread(input_path)
-        for resolution,newsize in resolutions.items():
-            image_new=cv2.resize(image_,newsize)
-            cv2.imwrite(join(output_path,resolution,name+'.jpg'),image_new)
+        if image in val_query_names:
+            type='query'
+            input_path=join(query_folder,image)
+            output_path=join(output_folder,type,pitch,yaw)
+            shutil.copy(input_path,join(output_path,'raw',name+'.jpg'))
+            image_=cv2.imread(input_path)
+            for resolution,newsize in resolutions.items():
+                image_new=cv2.resize(image_,newsize)
+                cv2.imwrite(join(output_path,resolution,name+'.jpg'),image_new)
 
 def main(configs):
     root=configs['root']
-    content=configs['vpr']['global_extractor']['netvlad']
-    teacher_model=NetVladFeatureExtractor(join(configs['root'], content['ckpt_path']), arch=content['arch'],
-        num_clusters=content['num_clusters'],
-        pooling=content['pooling'], vladv2=content['vladv2'], nocuda=content['nocuda'])
-    teacher_model.model.to(device).eval()
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
 
     gt_path=join(root,'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_database_10586_utm.mat')
     database_gt = scipy.io.loadmat(gt_path)['Cdb'].T
-
+    
     gt_path=join(root,'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_query_1000_utm.mat')
+    split_info_path = join(root, "data/third_party/pitts250k/netvlad_v100_datasets/tar/datasets")
     query_gt = scipy.io.loadmat(gt_path)['Cq'].T
     if not exists(join(root,'logs','pitts250k')):
-        process_data(root,database_gt)
+        process_data(root, split_info_path)
 
-    global_descriptor_dim=configs['train']['num_cluster']*configs['train']['cluster']['dimension']
     posDistThr=configs['train']['triplet_loss']['posDistThr']
     nonTrivPosDistSqThr=configs['train']['triplet_loss']['nonTrivPosDistSqThr']
     nPosSample=configs['train']['triplet_loss']['nPosSample']
@@ -256,18 +267,17 @@ def main(configs):
             gt=query_gt
         else:
             gt=database_gt
-        if not exists(join(root,'logs','pitts250k',image_folder,'neighbors.h5')):
-            extract_descriptors(join(root,'logs','pitts250k',image_folder),teacher_model.model)
-            if image_folder=='query':
-                find_neighbors(join(root,'logs','pitts250k',image_folder),gt,global_descriptor_dim,posDistThr,nonTrivPosDistSqThr,nPosSample,query=True)
-            else:
-                find_neighbors(join(root,'logs','pitts250k',image_folder),gt,global_descriptor_dim,posDistThr,nonTrivPosDistSqThr,nPosSample)
+        for model in global_extractors.models:
+            extract_descriptors(join(root,'logs','pitts250k',image_folder), model, global_extractors)
+            find_neighbors(join(root,'logs','pitts250k',image_folder), gt, global_extractors.feature_length(model), model,
+                           posDistThr, nonTrivPosDistSqThr, nPosSample, query=image_folder=="query")
+
             
 if __name__=='__main__':
     device='cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='/home/unav/Desktop/Resolution_Agnostic_VPR/configs/trainer.yaml')
+    parser.add_argument('-c', '--config', type=str, default='../configs/trainer_pitts250.yaml')
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-        main(config)
+    main(config)

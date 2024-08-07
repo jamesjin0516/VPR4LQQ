@@ -2,11 +2,12 @@ from os.path import join
 from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
 from third_party.MixVPR.feature_extract import MixVPRFeatureExtractor
 from third_party.AnyLoc.feature_extract import VLADDinoV2FeatureExtractor
+from third_party.salad.feature_extract import DINOV2SaladFeatureExtractor
 
 
 class GlobalExtractors:
 
-    model_classes = {"MixVPR": MixVPRFeatureExtractor, "AnyLoc": VLADDinoV2FeatureExtractor}
+    model_classes = {"MixVPR": MixVPRFeatureExtractor, "AnyLoc": VLADDinoV2FeatureExtractor, "DinoV2Salad": DINOV2SaladFeatureExtractor}
 
     def __init__(self, root, g_extr_conf, preprocess=False):
         """

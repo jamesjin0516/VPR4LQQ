@@ -15,9 +15,7 @@ from dataset.Data_Control import load_pitts250k_data,BatchSampler
 from loss.loss_distill import Loss_distill
 from math import ceil
 import h5py
-import sys
 import faiss
-sys.path.append(join(sys.path[0],'..'))
 from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
 from tensorboardX import SummaryWriter
 from datetime import datetime
@@ -64,12 +62,12 @@ class VPR():
 
         self.topk_nodes=torch.tensor(configs['vpr']['topk'])
 
-        logs_dir=join(configs['root'],'logs','tensorboard_logs',data_name)
+        logs_dir = join(configs['root'], configs["model_IO"]["logs_path"], data_name)
         if not exists(logs_dir):
             makedirs(logs_dir)
             
-        log_dir=data_name
-        self.save_path=join(configs['root'],'parameters/RA_VPR',data_name)
+        log_dir = data_name
+        self.save_path = join(configs['root'], configs["model_IO"]["weights_path"], log_dir)
         if self.config['train']['loss']['distill']:
             log_dir+='_distill'
             self.save_path+='_distill'
@@ -82,10 +80,11 @@ class VPR():
         if not exists(self.save_path):
             makedirs(self.save_path)
 
-        self.save_path=join(self.save_path,str(self.config['train']['data']['resolution'])+'_'+str(self.config['train']['data']['qp'])+'_'+str(self.lr))
+        parameter_folder = str(self.config['train']['data']['resolution'])+'_'+str(self.config['train']['data']['qp'])+'_'+str(self.lr)
+        self.save_path = join(self.save_path, parameter_folder)
         if not exists(self.save_path):
             makedirs(self.save_path)
-        log_dir=join(log_dir,str(self.config['train']['data']['resolution'])+'_'+str(self.config['train']['data']['qp'])+'_'+str(self.lr))
+        log_dir = join(log_dir, parameter_folder)
 
         self.writer = SummaryWriter(log_dir=join(logs_dir, log_dir))
 
