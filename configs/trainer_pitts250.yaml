@@ -72,7 +72,7 @@ vpr:
     - 25
   global_extractor:
     # If netvlad is used, then remaining methods are ignored given GlobalExtractor preprocess=False
-    netvlad:
+    NetVlad:
       use: true
       ckpt_path: 'parameters/netvlad/paper/checkpoints'
       arch: 'vgg16'
@@ -87,6 +87,8 @@ vpr:
       cuda: true
     AnyLoc:
       use: true
+      model_type: 'dinov2_vitg14'    # One of the following: "dinov2_vit<s|b|l|g>14"; should be same between training and testing
+      ckpt_path: 'None'    # If set to 'None', loads model_type from PyTorch Hub
       max_image_size: 1024    # To prevent out of memory
       desc_layer: 31
       desc_facet: 'value'    # one of "query", "key", "value", "token"
@@ -96,7 +98,7 @@ vpr:
       cuda: true
     DinoV2Salad:
       use: true
-      max_image_size: 1024    # To prevent out of memory
       ckpt_path: 'parameters/DinoV2Salad/ckpts/dino_salad.ckpt'
+      max_image_size: 1024    # To prevent out of memory
       cuda: true
   local_feature: 'superpoint'

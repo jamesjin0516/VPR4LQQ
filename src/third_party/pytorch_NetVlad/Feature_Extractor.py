@@ -73,29 +73,29 @@ class NetVladFeatureExtractor:
             raise ValueError('Unknown pooling type: ' + pooling)
 
         if type=='pipeline':
-            resume_ckpt = join(ckpt_path,'model_best.pth.tar')
+            resume_ckpt = join(ckpt_path,'model_best.pth')
         else:
-            resume_ckpt = join(ckpt_path,'checkpoint.pth.tar')
+            resume_ckpt = join(ckpt_path,'checkpoint.pth')
 
         if isfile(resume_ckpt):
-            print("=> loading checkpoint '{}'".format(resume_ckpt))
+            print("=> loading model weights '{}'".format(resume_ckpt))
             self.checkpoint = torch.load(resume_ckpt, map_location=lambda storage, loc: storage)
             best_metric = self.checkpoint['best_score']
             state_dict=self.checkpoint['state_dict']
             state_dict={k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
             self.model.load_state_dict(state_dict, strict=False)
             self.model = self.model.eval().to(self.device)
-            print("=> loaded checkpoint '{}' (epoch {})"
+            print("=> loaded weights '{}' (epoch {})"
                   .format(resume_ckpt, self.checkpoint['epoch']))
         else:
-            print("=> no checkpoint found at '{}'".format(resume_ckpt))
+            print("=> no model weights found at '{}'".format(resume_ckpt))
             exit()
 
     def __call__(self, images):
         with torch.no_grad():
             image_encoding = self.model.encoder(images)
             vlad_encoding = self.model.pool(image_encoding)
-            return vlad_encoding.detach().cpu()
+            return image_encoding.detach().cpu(), vlad_encoding.detach().cpu()
     
     @property
     def feature_length(self): return self.encoder_dim * self.num_clusters

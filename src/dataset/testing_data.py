@@ -1,4 +1,4 @@
-# Import necessary libraries
+import os
 from os.path import join, exists, basename, splitext
 from os import listdir, makedirs, rename
 import numpy as np
@@ -24,9 +24,9 @@ def input_transform():
     ])
 
 # Function to extract descriptors from images using a global feature extractor
-def extract_descriptors(image_folder, model):
-    hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
-    hfile, grp_name = h5py.File(hfile_path, 'a'), basename(image_folder)
+def extract_descriptors(image_folder, model, save_dir):
+    hfile_path = join(image_folder, save_dir, f"global_descriptor_{model}.h5")
+    hfile, grp_name = h5py.File(hfile_path, "a"), basename(image_folder)
     # Retrieve already processed images, if any
     if grp_name in hfile:
         existing_imgs = set(hfile[grp_name])
@@ -36,7 +36,7 @@ def extract_descriptors(image_folder, model):
         grp = hfile.create_group(basename(image_folder))
 
     # Ignore already processed images
-    images_high_path = join(image_folder, 'raw')
+    images_high_path = join(image_folder, "raw")
     image_high_names = set(listdir(images_high_path))
     images_to_add = image_high_names.difference(existing_imgs)
 
@@ -49,22 +49,22 @@ def extract_descriptors(image_folder, model):
         if i % 5 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
             if i > 0:
                 batched_imgs = torch.stack(images_list)
-                vector = global_extractors(model, batched_imgs)
-                for name, descriptor in zip(images_name, vector):
+                encodings, descriptors = global_extractors(model, batched_imgs)
+                for name, descriptor in zip(images_name, descriptors):
                     grp.create_dataset(name, data=descriptor)
-                del batched_imgs, vector
+                del batched_imgs, descriptors
                 torch.cuda.empty_cache()
             images_list, images_name = [], []
         images_list.append(image.to(device))
         images_name.append(im)
-    if len(images_list) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0)).squeeze(0))
+    if len(images_list) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0))[1].squeeze(0))
     hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
-def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
-    hfile_neighbor_path = join(image_folder, f"neighbors_{model}.h5")
-    hfile_path = join(image_folder, f"global_descriptor_{model}.h5")
-    hfile = h5py.File(hfile_path, 'r')
+def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample, save_dir):
+    hfile_neighbor_path = join(image_folder, save_dir, f"neighbors_{model}.h5")
+    hfile_path = join(image_folder, save_dir, f"global_descriptor_{model}.h5")
+    hfile = h5py.File(hfile_path, "r")
     
     names = []
     descriptors = np.empty((len(hfile[basename(image_folder)]), global_descriptor_dim))
@@ -94,7 +94,7 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
     batch_size = 1000  # or any other batch size you find suitable
 
     # Open the HDF5 file for storing neighbors
-    hfile = h5py.File(hfile_neighbor_path, 'a')
+    hfile = h5py.File(hfile_neighbor_path, "a")
     existing_indices = set(names.index(name) for name in set(hfile))
     indices_to_add = set(range(len(names))).difference(existing_indices)
 
@@ -134,8 +134,8 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
 
             if len(positives) > 0:
                 grp = hfile.create_group(name)
-                grp.create_dataset('positives', data=positives)
-                grp.create_dataset('negtives', data=negtives)
+                grp.create_dataset("positives", data=positives)
+                grp.create_dataset("negtives", data=negtives)
 
     hfile.close()
 
@@ -204,7 +204,7 @@ def process_image_filenames(folder_path, img_ext):
     return (utm_coords_array, filenames)
 
 # Main function to run the entire script
-def main(configs, data_info):
+def main(configs, data_info, save_dir):
     # Assemble the path to where the testing dataset contains database and query folders
     testset = configs['test_data']['name']
     test_info = data_info[testset]
@@ -227,17 +227,18 @@ def main(configs, data_info):
     arguments = []
     for image_type in gt_info:
         arguments.extend((image_type, model) for model in global_extractors.models)
+        makedirs(join(testset_path, test_info[image_type], save_dir), exist_ok=True)
     # Expand permutations into global descriptor extraction parameters
     descriptor_args = [(join(testset_path, test_info[image_folder]), model) for image_folder, model in arguments]
     print(f"Extracting global descriptors of {testset} for each of {global_extractors.models}")
     for arg in descriptor_args:
-        extract_descriptors(*arg)
+        extract_descriptors(*arg, save_dir)
     # Similarly assemble find neighbor parameters
     neighbor_args = [(gt_info[image_folder]["filenames"], join(testset_path, test_info[image_folder]), model, gt_info[image_folder]["gt"],
                       global_extractors.feature_length(model), posDistThr, nonTrivPosDistSqThr, nPosSample) for image_folder, model in arguments]
     print(f"Gathering neighbors of {testset} for each of {global_extractors.models}")
     for arg in neighbor_args:
-        find_neighbors(*arg)
+        find_neighbors(*arg, save_dir)
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
@@ -246,12 +247,25 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     parser.add_argument("--test_set", type=str, help="Name of dataset to use")
+    parser.add_argument("--trained", action="store_true", help="Whether to use trained models")
     args = parser.parse_args()
-    with open(args.config, 'r') as f:
+    with open(args.config, "r") as f:
         configs = yaml.safe_load(f)
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
     if args.test_set is not None:
         configs["test_data"]["name"] = args.test_set
-    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
-    main(configs, data_info)
+    
+    # For finding model weights / saving computed descriptors, assemble directory names according to training configurations
+    train_conf = configs["train_conf"]
+    log_suffix = join(train_conf["data"]["name"] + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
+                        + ("_triplet" if train_conf["loss"]["triplet"] else ""), "{}",
+                        str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
+    if args.trained:
+        for model_name, model_conf in configs["vpr"]["global_extractor"].items():
+            model_conf["ckpt_path"] = join(configs["root"], configs["model_IO"]["weights_path"], log_suffix.format(model_name))
+        save_dir = join("precomputed_descriptors", *[folder_name for folder_name in log_suffix.split(os.path.sep) if folder_name != "{}"])
+    else:
+        save_dir = join("precomputed_descriptors", "pretrained")
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=args.trained)
+    main(configs, data_info, save_dir)

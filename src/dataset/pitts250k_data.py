@@ -64,7 +64,7 @@ def extract_descriptors(image_folder, model, global_extractors):
         if i % 15 == 0 or i == len(images_to_add) - 1:
             if i>0:
                 image_=torch.stack(images_list)
-                global_descr = global_extractors(model, image_)
+                encodings, global_descr = global_extractors(model, image_)
                 for name, descriptor in zip(images_name,global_descr):
                     grp.create_dataset(name, data=descriptor)
                 del image_, global_descr
@@ -73,7 +73,7 @@ def extract_descriptors(image_folder, model, global_extractors):
         image = input_transform()(Image.open(image_high_path))
         images_list.append(image.to(device))
         images_name.append(img_identifier)
-    if len(images_to_add) == 1: grp.create_dataset(img_identifier, data = global_extractors(model, image.to(device).unsqueeze(0)).squeeze(0))
+    if len(images_to_add) == 1: grp.create_dataset(img_identifier, data=global_extractors(model, image.to(device).unsqueeze(0))[0].squeeze(0))
     hfile.close()
 
 def find_neighbors(image_folder, gt, global_descriptor_dim, model, posDistThr, nonTrivPosDistSqThr, nPosSample, query=False):
@@ -246,7 +246,7 @@ def process_data(root, split_info_path):
 
 def main(configs):
     root=configs['root']
-    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], preprocess=True)
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=False)
 
     gt_path=join(root,'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_database_10586_utm.mat')
     database_gt = scipy.io.loadmat(gt_path)['Cdb'].T
