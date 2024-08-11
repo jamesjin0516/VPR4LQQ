@@ -1,4 +1,8 @@
-root: '/scratch/gj2148/VPR4LQQ'
+root: '/mnt/data/VPR4LQQ'
+
+model_IO:
+  weights_path: parameters/RA_VPR
+  logs_path: logs/tensorboard_logs
 
 data:
   rate: 30
@@ -33,7 +37,7 @@ train:
   num_cluster: 64
   cacheRefreshRate: 1000
   nGPU: 2
-  resume: true
+  resume: false
   lr: 0.000001
   lr_decay: 0.000000000002
   exponential_gamma: 0.99999
@@ -46,7 +50,7 @@ train:
     dimension: 512
   loss:
     distill: true
-    vlad: false
+    vlad: true
     triplet: true
   triplet_loss:
     posDistThr: 30
@@ -67,12 +71,34 @@ vpr:
   threshold:
     - 25
   global_extractor:
-    netvlad:
+    # If netvlad is used, then remaining methods are ignored given GlobalExtractor preprocess=False
+    NetVlad:
       use: true
-      ckpt_path:  'parameters/netvlad/paper'
+      ckpt_path: 'parameters/netvlad/paper/checkpoints'
       arch: 'vgg16'
       num_clusters: 64
-      pooling:  'netvlad'
+      pooling: 'netvlad'
       vladv2: false
       nocuda: false
+    MixVPR:
+      use: true
+      ckpt_path: 'parameters/MixVPR/ckpts/resnet50_MixVPR_4096_channels(1024)_rows(4).ckpt'
+      resized_img_size: [320, 320]    # For MixVPR's pretrained weights, this value cannot change
+      cuda: true
+    AnyLoc:
+      use: true
+      model_type: 'dinov2_vitg14'    # One of the following: "dinov2_vit<s|b|l|g>14"; should be same between training and testing
+      ckpt_path: 'None'    # If set to 'None', loads model_type from PyTorch Hub
+      max_image_size: 1024    # To prevent out of memory
+      desc_layer: 31
+      desc_facet: 'value'    # one of "query", "key", "value", "token"
+      num_clusters: 32
+      domain: 'indoor'    # one of "aerial", "indoor", "urban"
+      cache_dir: 'parameters/AnyLoc/demo/cache'
+      cuda: true
+    DinoV2Salad:
+      use: true
+      ckpt_path: 'parameters/DinoV2Salad/ckpts/dino_salad.ckpt'
+      max_image_size: 1024    # To prevent out of memory
+      cuda: true
   local_feature: 'superpoint'

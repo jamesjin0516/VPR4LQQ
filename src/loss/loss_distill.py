@@ -7,7 +7,7 @@ class Loss_distill(nn.Module):
         super().__init__()
 
     def similarity(self,feature):
-        b,c,_,_=feature.size()
+        b,c = feature.shape[:2]
         feature_flatten=feature.view(b,c,-1)
         feature_flatten=F.normalize(feature_flatten, p=2, dim=2)
         similarity_matrix=F.normalize(torch.bmm(feature_flatten, feature_flatten.transpose(1, 2)), p=2, dim=2)

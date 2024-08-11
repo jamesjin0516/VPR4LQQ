@@ -13,3 +13,63 @@ tokyo247:
   database: database
   query: queries
   img_ext: jpg
+
+msls:
+  subset: test
+  database: database
+  query: queries
+  img_ext: jpg
+
+amstertime:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+eynsham:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+sped:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+san_francisco:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+Nordland:
+  subset: images/test
+  database: database
+  query: queries
+  img_ext: jpg
+
+svox:
+  subset: images/test
+  database: gallery
+  query: queries
+  img_ext: jpg
+
+nyc_indoor:
+  subset: test
+  database: database
+  query: queries
+  img_ext: jpg
+
+tum_lsi:
+  subset: test
+  database: database
+  query: queries
+  img_ext: jpg
+
+GangnamStation:
+  subset: B1/release
+  database: mapping_imgs
+  query: validation_imgs
+  img_ext: jpg

@@ -107,7 +107,6 @@ class Pitts250k_dataset(Dataset):
         
     def __getitem__(self, index):
         # concat image, postive image, and negative images
-        print('starting to get item from Pitts250k_dataset')
         high_image_set,low_image_set=self.data[index]
         image_high_path,positives_high,negtives_high=high_image_set
         image_low_path,positives_low,negtives_low=low_image_set
@@ -122,8 +121,6 @@ class Pitts250k_dataset(Dataset):
         images_low=torch.stack(images_low)
         locations=np.array(locations)
         locations=torch.tensor(locations)
-        print(images_high.shape, images_low.shape, images_low_path, locations.shape)
-        breakpoint()
         return [images_high,images_low,images_low_path,locations]
         # images_high: (7, 3, 480, 640)
         # images_low: (7, 3, 180, 240)

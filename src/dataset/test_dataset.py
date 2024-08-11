@@ -1,19 +1,13 @@
 import numpy as np
-from os.path import join,exists,basename
+from os.path import join, exists
 from os import listdir
-from typing import Optional, Sized
-from dataset.GT_pose import GT_pose
 
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import Dataset, Sampler, ConcatDataset
+from torch.utils.data import Dataset
 
-from sklearn.neighbors import NearestNeighbors
-import json
 from PIL import Image
-from tqdm import tqdm
 import h5py
-import random
 
 
 def read_coordinates(image_names):    # -> shape = (len(image_names), 2])
@@ -45,9 +39,10 @@ def collate_fn(batch):
 
 class TestDataset(Dataset):
 
-    def __init__(self, image_folder, resolution, train_loss_config):
+    def __init__(self, image_folder, neighbors_suffix, resolution, train_loss_config):
         """
         - image_folder: path to query images folder (one level above individual resolutions folder)
+        - neighbors_suffix: path of neighbors file relative to image_folder
         - resolution: specifies the resolution folder to choose for query images
         """
         self.input_transform = transforms.Compose([
@@ -58,7 +53,7 @@ class TestDataset(Dataset):
         self.image_folder = image_folder
         self.resolution = resolution 
         self.nPosSample,self.nNegSample = train_loss_config['nPosSample'],train_loss_config['nNegSample'] # 1, 5
-        self.neighbor_file = h5py.File(join(image_folder, 'neighbors.h5'), 'r')
+        self.neighbor_file = h5py.File(join(image_folder, neighbors_suffix), "r")
         self.__prepare_data(image_folder)
 
 
@@ -75,12 +70,18 @@ class TestDataset(Dataset):
         # Only stack image tensors if all have the same shape; otherwise keep as list of tensors
         img_same_res = True
         for imp in [image_high_path] + positives_high + negtives_high:
-            im = self.input_transform(Image.open(imp)).unsqueeze(0)
+            im = Image.open(imp)
+            if im.mode != 'RGB':
+                im = im.convert('RGB')
+            im = self.input_transform(im).unsqueeze(0)
             if len(images_high) > 0 and im.shape != images_high[-1].shape: img_same_res = False
             images_high.append(im)
         if img_same_res: images_high = torch.stack(images_high)
         for imp in [image_low_path] + positives_low + negtives_low:
-            im = self.input_transform(Image.open(imp)).unsqueeze(0)
+            im = Image.open(imp)
+            if im.mode != 'RGB':
+                im = im.convert('RGB')
+            im = self.input_transform(im).unsqueeze(0)
             images_low.append(im)
             locations.append(read_coordinate(imp))
         if img_same_res: images_low = torch.stack(images_low)

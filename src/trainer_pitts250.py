@@ -8,19 +8,16 @@ import torch.optim as optim
 import argparse
 from feature.Geomatric_verification import Geometric_verification
 from os.path import join,exists
-from os import makedirs,listdir
+from os import makedirs
 
 from dataset.Data_Control import load_pitts250k_data,BatchSampler
 
 from loss.loss_distill import Loss_distill
 from math import ceil
 import h5py
-import sys
 import faiss
-sys.path.append(join(sys.path[0],'..'))
 from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtractor
 from tensorboardX import SummaryWriter
-from datetime import datetime
 from tqdm.auto import tqdm
 from torch.cuda.amp import GradScaler
 from torch.nn.utils import clip_grad_norm_
@@ -30,7 +27,6 @@ import torch
 import torch.backends.cuda as cuda
 import torch.backends.cudnn as cudnn
 import torch.backends.opt_einsum as opt_einsum
-import json
 import random
 import scipy.io
 import shutil
@@ -64,12 +60,12 @@ class VPR():
 
         self.topk_nodes=torch.tensor(configs['vpr']['topk'])
 
-        logs_dir=join(configs['root'],'logs','tensorboard_logs',data_name)
+        logs_dir = join(configs['root'], configs["model_IO"]["logs_path"], data_name)
         if not exists(logs_dir):
             makedirs(logs_dir)
             
-        log_dir=data_name
-        self.save_path=join(configs['root'],'parameters/RA_VPR',data_name)
+        log_dir, extractor_name = data_name, "NetVlad"    # Hard coded before adding model selection support
+        self.save_path = join(configs['root'], configs["model_IO"]["weights_path"], log_dir)
         if self.config['train']['loss']['distill']:
             log_dir+='_distill'
             self.save_path+='_distill'
@@ -82,10 +78,11 @@ class VPR():
         if not exists(self.save_path):
             makedirs(self.save_path)
 
-        self.save_path=join(self.save_path,str(self.config['train']['data']['resolution'])+'_'+str(self.config['train']['data']['qp'])+'_'+str(self.lr))
+        parameter_folder = str(self.config['train']['data']['resolution'])+'_'+str(self.config['train']['data']['qp'])+'_'+str(self.lr)
+        self.save_path = join(self.save_path, extractor_name, parameter_folder)
         if not exists(self.save_path):
             makedirs(self.save_path)
-        log_dir=join(log_dir,str(self.config['train']['data']['resolution'])+'_'+str(self.config['train']['data']['qp'])+'_'+str(self.lr))
+        log_dir = join(log_dir, extractor_name, parameter_folder)
 
         self.writer = SummaryWriter(log_dir=join(logs_dir, log_dir))
 
@@ -128,7 +125,7 @@ class VPR():
         self.nPosSample,self.nNegSample=triplet_loss_config['nPosSample'],triplet_loss_config['nNegSample']
 
         ### loading database / query data
-        self.databases=self.load_database(data_path['database'])
+        self.databases=self.load_database(data_path["database"], extractor_name)
         self.query_data_sets=load_pitts250k_data(data_path['query'],configs['train'])
         self.train_data_sets=load_pitts250k_data(data_path['train'],configs['train'])
         self.valid_data_sets=load_pitts250k_data(data_path['valid'],configs['train'])
@@ -150,11 +147,11 @@ class VPR():
         self.sigmoid = nn.Sigmoid()
 
     #@pysnooper.snoop('train-VID.log', depth=3)
-    def load_database(self,v):
+    def load_database(self, v, extractor_name):
         databases={}
 
         image_folder=v['image_folder']
-        global_descriptors = h5py.File(join(image_folder,'global_descriptor.h5'), 'r')['database']
+        global_descriptors = h5py.File(join(image_folder, f"global_descriptor_{extractor_name}.h5"), "r")["database"]
 
         gt=v['utm']
         gt_id=v['id']
@@ -168,6 +165,7 @@ class VPR():
             descriptors[i]=torch.tensor(d.__array__())
             locations[i]=torch.tensor(gt[gt_id.index(int(image_name.replace('.jpg','')))])
 
+        global_descriptors.close()
         databases['database']={'images_path':names,'descriptors':descriptors,'locations':locations}
         return databases
             
@@ -371,10 +369,10 @@ class VPR():
                             'state_dict': model_state_dict,
                             'best_score': evaluation_distill[0,0],
                         }
-            save_path=join(self.save_path,'checkpoint.pth.tar')
+            save_path = join(self.save_path, "checkpoint.pth")
             torch.save(state,save_path)
             if evaluation_distill[0,0]>=self.best_score:
-                shutil.copyfile(save_path, join(self.save_path, 'model_best.pth.tar'))
+                shutil.copyfile(save_path, join(self.save_path, "model_best.pth"))
                 self.best_score=evaluation_distill[0,0]
 
             del evaluation_base,evaluation_distill
@@ -548,7 +546,7 @@ def main(configs):
     
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='/home/unav/Desktop/Resolution_Agnostic_VPR/configs/trainer.yaml')
+    parser.add_argument('-c', '--config', type=str, default="../configs/trainer_pitts250.yaml")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
