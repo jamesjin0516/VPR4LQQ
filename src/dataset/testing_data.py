@@ -40,7 +40,10 @@ def extract_descriptors(image_folder, model, save_dir):
     image_high_names = set(listdir(images_high_path))
     images_to_add = image_high_names.difference(existing_imgs)
 
-    if len(images_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
+    if len(images_to_add) == 0:
+        print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
+        hfile.close()
+        return
     for i, im in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
         image = Image.open(join(images_high_path, im))
         if image.mode != "RGB": image = image.convert("RGB")
@@ -50,14 +53,14 @@ def extract_descriptors(image_folder, model, save_dir):
             if i > 0:
                 batched_imgs = torch.stack(images_list)
                 encodings, descriptors = global_extractors(model, batched_imgs)
-                for name, descriptor in zip(images_name, descriptors):
+                for name, descriptor in zip(images_name, descriptors.cpu()):
                     grp.create_dataset(name, data=descriptor)
                 del batched_imgs, descriptors
                 torch.cuda.empty_cache()
             images_list, images_name = [], []
         images_list.append(image.to(device))
         images_name.append(im)
-    if len(images_list) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0))[1].squeeze(0))
+    if len(images_list) == 1: grp.create_dataset(im, data=global_extractors(model, image.to(device).unsqueeze(0))[1].cpu().squeeze(0))
     hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
@@ -101,10 +104,14 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
     # Iterate through batches to find neighbors
     num_batches = int(np.ceil(len(names)/batch_size))
     
-    if len(indices_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_neighbor_path)} already contains all images.")
+    if len(indices_to_add) == 0:
+        print(f"{basename(image_folder)} {basename(hfile_neighbor_path)} already contains all images.")
+        hfile.close()
+        return
     for batch_idx in tqdm(range(num_batches), desc=f"{basename(image_folder)} {basename(hfile_neighbor_path)}"):
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, len(names))
+        if len(indices_to_add.intersection(range(start_idx, end_idx))) == 0: continue
         descriptor_batch = descriptors[start_idx:end_idx]
         # Compute the similarity matrix for the batch against all descriptors
         sim_batch = torch.einsum('id,jd->ij', descriptor_batch, descriptors).float()
@@ -243,6 +250,7 @@ def main(configs, data_info, save_dir):
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    torch.set_grad_enabled(False)
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")

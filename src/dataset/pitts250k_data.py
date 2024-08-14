@@ -57,7 +57,10 @@ def extract_descriptors(image_folder, model, global_extractors):
     image_high_names = set(image_high_names)
     images_to_add = image_high_names.difference(existing_imgs)
 
-    if len(images_to_add) == 0: print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
+    if len(images_to_add) == 0:
+        print(f"{basename(image_folder)} {basename(hfile_path)} already contains all images.")
+        hfile.close()
+        return
     for i, img_identifier in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
         pitch, yaw, orig_name = img_identifier.split("+")
         image_high_path = join(image_folder, pitch, yaw, "raw", orig_name)
@@ -65,7 +68,7 @@ def extract_descriptors(image_folder, model, global_extractors):
             if i>0:
                 image_=torch.stack(images_list)
                 encodings, global_descr = global_extractors(model, image_)
-                for name, descriptor in zip(images_name,global_descr):
+                for name, descriptor in zip(images_name, global_descr.cpu()):
                     grp.create_dataset(name, data=descriptor)
                 del image_, global_descr
                 torch.cuda.empty_cache()
@@ -73,7 +76,7 @@ def extract_descriptors(image_folder, model, global_extractors):
         image = input_transform()(Image.open(image_high_path))
         images_list.append(image.to(device))
         images_name.append(img_identifier)
-    if len(images_to_add) == 1: grp.create_dataset(img_identifier, data=global_extractors(model, image.to(device).unsqueeze(0))[0].squeeze(0))
+    if len(images_list) == 1: grp.create_dataset(img_identifier, data=global_extractors(model, image.to(device).unsqueeze(0))[1].squeeze(0).cpu())
     hfile.close()
 
 def find_neighbors(image_folder, gt, global_descriptor_dim, model, posDistThr, nonTrivPosDistSqThr, nPosSample, query=False):
@@ -275,6 +278,7 @@ def main(configs):
             
 if __name__=='__main__':
     device='cuda' if torch.cuda.is_available() else 'cpu'
+    torch.set_grad_enabled(False)
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/trainer_pitts250.yaml')
     args = parser.parse_args()

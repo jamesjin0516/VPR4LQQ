@@ -23,7 +23,6 @@ class GlobalExtractors:
                 netvlad_model = NetVladFeatureExtractor(join(root, model_configs["ckpt_path"]), type="pipeline" if pipeline else None,
                     arch=model_configs['arch'], num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'],
                     vladv2=model_configs['vladv2'], nocuda=model_configs['nocuda'])
-                netvlad_model.model.eval()
                 self.models_objs["NetVlad"] = netvlad_model
             elif model_name in GlobalExtractors.model_classes:
                 self.models_objs[model_name] = GlobalExtractors.model_classes[model_name](root, model_configs, pipeline)
@@ -39,10 +38,40 @@ class GlobalExtractors:
             print(f"GlobalExtractors wasn't initialized with {request_model}, skipped. options: {self.models}")
         else:
             return self.models_objs[request_model](images)
+    
+    def set_train(self, is_train):
+        """
+        All models are created in eval mode. This method explicitly sets the mode of all models.
+        """
+        for model in self.models_objs:
+            self.models_objs[model].set_train(is_train)
+    
+    def torch_compile(self, float32=False, **compile_args):
+        """
+        Apply torch.compile with all given keyword arguments to all models
+        - float32: whether to also change the models to float32 mode
+        """
+        for model in self.models_objs:
+            self.models_objs[model].torch_compile(float32, **compile_args)
+    
+    def save_state(self, model, save_path, new_state):
+        """
+        Save a new epoch number and recall score to 
+        """
+        self.models_objs[model].save_state(save_path, new_state)
 
     @property
     def models(self):
         return list(self.models_objs.keys())
+
+    def last_epoch(self, model):
+        return self.models_objs[model].last_epoch
+
+    def best_score(self, model):
+        return self.models_objs[model].best_score
+
+    def model_parameters(self, model):
+        return self.models_objs[model].parameters
 
     def feature_length(self, model):
         return self.models_objs[model].feature_length

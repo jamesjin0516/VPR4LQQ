@@ -92,10 +92,30 @@ class NetVladFeatureExtractor:
             exit()
 
     def __call__(self, images):
-        with torch.no_grad():
-            image_encoding = self.model.encoder(images)
-            vlad_encoding = self.model.pool(image_encoding)
-            return image_encoding.detach().cpu(), vlad_encoding.detach().cpu()
+        image_encoding = self.model.encoder(images)
+        vlad_encoding = self.model.pool(image_encoding)
+        return image_encoding, vlad_encoding
     
+    def set_train(self, is_train):
+        self.model.train(is_train)
+    
+    def torch_compile(self, float32=False, **compile_args):
+        self.model = torch.compile(self.model, **compile_args)
+        if float32:
+            self.model.to(torch.float32)
+    
+    def save_state(self, save_path, new_state):
+        new_state["state_dict"] = self.model.state_dict()
+        torch.save(new_state, save_path)
+
+    @property
+    def last_epoch(self): return self.checkpoint["epoch"]
+
+    @property
+    def best_score(self): return self.checkpoint["best_score"]
+
+    @property
+    def parameters(self): return self.model.parameters()
+
     @property
     def feature_length(self): return self.encoder_dim * self.num_clusters
