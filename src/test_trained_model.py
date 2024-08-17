@@ -155,7 +155,7 @@ class VPRTester:
         data_loader = DataLoader(self.valid_data_set, num_workers=self.train_conf['num_worker'], pin_memory=True, batch_sampler=batch_sampler)
 
         with torch.no_grad():
-            enabled_loss_types = set(self.train_conf["loss"].keys()).union(["loss"])
+            enabled_loss_types = set(loss_type for loss_type, enabled in self.train_conf["loss"].items() if enabled).union(["loss"])
             models_losses = {model: {loss_type: 0 for loss_type in enabled_loss_types} for model in self.extrs_trained.models}
             for images_high, images_low, _ in tqdm(data_loader, total=len(self.valid_data_set) // self.batch_size + 1):
                 features_high, vectors_high = self._compute_image_descriptors(images_high, models_losses.keys(), calc_pos_neg=True)

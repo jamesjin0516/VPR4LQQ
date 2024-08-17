@@ -1,12 +1,8 @@
-from os.path import join,exists,basename
+from os.path import join, exists, basename, isdir
 from os import listdir
-from typing import Optional, Sized
 import numpy as np
 import json
-from torch.utils.data import ConcatDataset
-from dataset.GT_pose import GT_pose
 from torch.utils.data import Dataset,Sampler
-from sklearn.neighbors import NearestNeighbors
 import json
 from PIL import Image
 import torch
@@ -94,54 +90,73 @@ class UNav_dataset(Dataset):
     def __len__(self):
         return len(self.data)
 
+
+def collate_fn(batch):
+    reorganized = [dict() for _ in range(4)]    # images_high, images_low, images_low_path, locations for each model
+    for batch_item in batch:
+        for model, image_data in batch_item.items():
+            # Distribute each type of image_data into the reorganized batch, where each type is still grouped into models
+            for i in range(len(image_data)):
+                if model in reorganized[i]:
+                    reorganized[i][model].append(image_data[i])
+                else:
+                    reorganized[i][model] = [image_data[i]]
+    for model, low_paths in reorganized[2].items():
+        reorganized[2][model] = [tuple(low_paths[batch_ind][path_ind] for batch_ind in range(len(low_paths))) for path_ind in range(len(low_paths[0]))]
+    for data_ind in range(len(reorganized)):
+        if data_ind == 2: continue
+        for model in reorganized[data_ind]:
+            reorganized[data_ind][model] = torch.stack(reorganized[data_ind][model])
+    return reorganized
+
+
 class Pitts250k_dataset(Dataset):
-    device='cuda' if torch.cuda.is_available() else 'cpu'
-    def __init__(self,image_folder,resolution,neighbor_file,gt,image_id,**config):
+    
+    def __init__(self, image_folder, resolution, models, gt, image_id, **config):
         self.gt=gt # (1000, 2)
         self.id=image_id # 1000
-        self.neighbor_file=neighbor_file
         self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample'] # 1, 5
         self.high_resolution='raw'
-        self.resolution=resolution # 180p
-        self.__prepare_data(image_folder)
+        self.resolution = resolution
+        self.input_transform = transforms.Compose([transforms.ToTensor(),
+                                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+        neighbor_files = {model: h5py.File(join(image_folder, f"neighbors_{model}.h5"), "r") for model in models}
+        self.__prepare_data(image_folder, neighbor_files)
+        for file in neighbor_files.values(): file.close()
         
     def __getitem__(self, index):
-        # concat image, postive image, and negative images
-        high_image_set,low_image_set=self.data[index]
-        image_high_path,positives_high,negtives_high=high_image_set
-        image_low_path,positives_low,negtives_low=low_image_set
-        images_high,images_low,images_low_path,locations=[],[],[],[]
-        for im in [image_high_path]+positives_high+negtives_high:
-            images_high.append(self.input_transform()(Image.open(im)))
-        images_high=torch.stack(images_high)
-        for im in [image_low_path]+positives_low+negtives_low:
-            images_low_path.append(im)
-            images_low.append(self.input_transform()(Image.open(im)))
-            locations.append(self.gt[self.id.index(int(basename(im).replace('.jpg','')))]) # gt corresponding to the image path
-        images_low=torch.stack(images_low)
-        locations=np.array(locations)
-        locations=torch.tensor(locations)
-        return [images_high,images_low,images_low_path,locations]
-        # images_high: (7, 3, 480, 640)
-        # images_low: (7, 3, 180, 240)
-        # images_low_path: 7 (list)
-        # locations: (7, 2)
-    
-    def input_transform(self):
-        return transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                   std=[0.229, 0.224, 0.225]),
-        ])
+        image_data = {}
+        for model, (high_image_set, low_image_set) in self.data[index].items():
+            # concat image, postive image, and negative images
+            image_high_path, positives_high, negtives_high = high_image_set
+            image_low_path, positives_low, negtives_low = low_image_set
+            images_high, images_low, images_low_path, locations = [], [], [], []
+            for im in [image_high_path] + positives_high + negtives_high:
+                images_high.append(self.input_transform(Image.open(im)))
+            images_high=torch.stack(images_high)
+            for im in [image_low_path] + positives_low + negtives_low:
+                images_low_path.append(im)
+                images_low.append(self.input_transform(Image.open(im)))
+                locations.append(self.gt[self.id.index(int(basename(im).rstrip(".jpg")))]) # gt corresponding to the image path
+            images_low=torch.stack(images_low)
+            locations = torch.tensor(np.array(locations))
+            image_data[model] = [images_high, images_low, images_low_path, locations]
+            # images_high: (7, 3, 480, 640)
+            # images_low: (7, 3, 180, 240)
+            # images_low_path: 7 (list)
+            # locations: (7, 2)
+        return image_data
     
     def __len__(self):
         return len(self.data)
     
-    def __prepare_data(self,image_folder):
-        self.data=[]
-        pitch_list=listdir(image_folder)
-        pitch_list.remove('global_descriptor.h5')
-        pitch_list.remove('neighbors.h5')
+    def __prepare_data(self, image_folder, neighbor_files):
+        self.data, discarded_imgs = [], []
+        dir_contents, pitch_list = listdir(image_folder), []
+        for dir_entry in dir_contents:
+            if isdir(join(image_folder, dir_entry)):
+                pitch_list.append(dir_entry)
         for pitch in sorted(pitch_list):
             pitch_folder=join(image_folder,pitch)
             yaw_list=listdir(pitch_folder)
@@ -152,16 +167,16 @@ class Pitts250k_dataset(Dataset):
 
                 images_low=listdir(images_low_path)
                 for image in images_low:
-                    name=f'{pitch}+{yaw}+{image}'
-                    if name in self.neighbor_file:
+                    name, image_data = f"{pitch}+{yaw}+{image}", {}
+                    for model, neighbor_file in neighbor_files.items():
                         image_high_path=join(images_high_path,image) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
                         image_low_path=join(images_low_path,image)
                         positives_high,negtives_high=[],[]
                         positives_low,negtives_low=[],[]
                         ind=0
                         # key: how to get the neighbor thing in the new dataset
-                        positives_pool=self.neighbor_file[name]['positives'][:] #(20,)
-                        negtives_pool=self.neighbor_file[name]['negtives'][:] #(100,)
+                        positives_pool = neighbor_file[name]['positives'][:] #(20,)
+                        negtives_pool = neighbor_file[name]['negtives'][:] #(100,)
                         while len(positives_high)<self.nPosSample:
                             pitch_,yaw_,name_=positives_pool[ind].decode('utf-8').split('+')
                             positive_high=join(image_folder,pitch_,yaw_,self.high_resolution,name_)
@@ -184,23 +199,29 @@ class Pitts250k_dataset(Dataset):
                             if ind==len(negtives_pool)-1:
                                 break
                         if len(positives_high)==self.nPosSample and len(negtives_high)==self.nNegSample:
-                            self.data.append([[image_high_path,positives_high,negtives_high],[image_low_path,positives_low,negtives_low]])
+                            image_data[model] = [[image_high_path, positives_high, negtives_high], [image_low_path, positives_low, negtives_low]]
                         # image_high_path: '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
                         # positives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006419.jpg']
                         # negtives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/210/raw/006352.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/240/raw/003258.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/300/raw/008770.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/180/raw/006603.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/060/raw/008609.jpg']
                         # same pattern for low
+                    if len(image_data) == len(neighbor_files):
+                        self.data.append(image_data)
+                    else:
+                        discarded_imgs.append(name)
+        if len(discarded_imgs) > 0:
+            print(f"Pitts250k dataset ({basename(image_folder)}) discarded {len(discarded_imgs)} for insufficient"
+                  f"neighbors from at least one extractor.\n{discarded_imgs}")
                         
 
-def load_pitts250k_data(data,config):
+def load_pitts250k_data(data, config, models):
     image_folder=data['image_folder']
     gt=data['utm'] # (1000, 2) eg. [585001.41335051, 4477058.99275442]
     image_id=data['id'] # 1000
 
-    neighbor_file = h5py.File(join(image_folder,'neighbors.h5'), 'r')
-
-    pitch_list=listdir(image_folder)
-    pitch_list.remove('global_descriptor.h5')
-    pitch_list.remove('neighbors.h5')
+    dir_contents, pitch_list = listdir(image_folder), []
+    for dir_entry in dir_contents:
+        if isdir(join(image_folder, dir_entry)):
+            pitch_list.append(dir_entry)
     
     for pitch in sorted(pitch_list):
         pitch_folder=join(image_folder,pitch)
@@ -216,9 +237,9 @@ def load_pitts250k_data(data,config):
     if dataconfig['resolution']==-1:
         for resolution in tqdm(resolution_list,desc=f'loading data from {image_folder}',total=len(resolution_list)):
             if resolution!='raw':
-                dataset.append(Pitts250k_dataset(image_folder,resolution,neighbor_file,gt,image_id,**config['triplet_loss']))
+                dataset.append(Pitts250k_dataset(image_folder, resolution, models, gt, image_id, **config["triplet_loss"]))
     else:
-        dataset.append(Pitts250k_dataset(image_folder,dataconfig['resolution'],neighbor_file,gt,image_id,**config['triplet_loss']))
+        dataset.append(Pitts250k_dataset(image_folder, dataconfig["resolution"], models, gt, image_id, **config["triplet_loss"]))
 
     return dataset
 
