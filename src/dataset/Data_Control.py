@@ -211,7 +211,108 @@ class Pitts250k_dataset(Dataset):
         if len(discarded_imgs) > 0:
             print(f"Pitts250k dataset ({basename(image_folder)}) discarded {len(discarded_imgs)} for insufficient"
                   f"neighbors from at least one extractor.\n{discarded_imgs}")
-                        
+
+
+def collate_fn_with_high_descriptors(batch):
+    reorganized = [dict() for _ in range(5)]    # images_high, high_descriptors, images_low, images_low_path, locations for each model
+    for batch_item in batch:
+        for model, image_data in batch_item.items():
+            # Distribute each type of image_data into the reorganized batch, where each type is still grouped into models
+            for i in range(len(image_data)):
+                if model in reorganized[i]:
+                    reorganized[i][model].append(image_data[i])
+                else:
+                    reorganized[i][model] = [image_data[i]]
+    for model, low_paths in reorganized[3].items():
+        reorganized[3][model] = [tuple(low_paths[batch_ind][path_ind] for batch_ind in range(len(low_paths))) for path_ind in range(len(low_paths[0]))]
+    for data_ind in range(len(reorganized)):
+        if data_ind == 3: continue
+        for model in reorganized[data_ind]:
+            reorganized[data_ind][model] = torch.stack(reorganized[data_ind][model])
+    return reorganized
+
+
+class GSVCitiesDataset(Dataset):
+    high_resolution = "480p"
+    def __init__(self, images_path, resolution, cities, models, groundtruth, **config):
+        self.groundtruth = groundtruth
+        self.input_transform = transforms.Compose([transforms.ToTensor(),
+                                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        self.__prepare_data(images_path, resolution, cities, models, config["nPosSample"], config["nNegSample"])
+        self.descriptor_files = {city: {model: h5py.File(join(images_path, city, f"global_descriptor_{model}.h5"), "r") for model in models} for city in cities}
+        
+    def __getitem__(self, index):
+        image_data = {}
+        for model, (high_image_set, low_image_set) in self.data[index].items():
+            # concat image, postive image, and negative images
+            image_high_path, positives_high, negtives_high = high_image_set
+            image_low_path, positives_low, negtives_low = low_image_set
+            city = basename(image_high_path).split("_")[0]
+            images_high, high_descriptors, images_low, images_low_path, locations = [], [], [], [], []
+            for im in [image_high_path] + positives_high + negtives_high:
+                images_high.append(self.input_transform(Image.open(im)))
+                # high_descriptors.append(torch.tensor(self.descriptor_files[city][model]["train"][basename(im)][:]))
+            images_high = torch.stack(images_high)
+            for im in [image_low_path] + positives_low + negtives_low:
+                images_low_path.append(im)
+                images_low.append(self.input_transform(Image.open(im)))
+                locations.append(self.groundtruth[basename(im)]) # gt corresponding to the image path
+            images_low = torch.stack(images_low)
+            # high_descriptors = torch.stack(high_descriptors)
+            locations = torch.tensor(np.array(locations))
+            image_data[model] = [images_high, images_low, images_low_path, locations]
+        return image_data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def close_descriptor_files(self):
+        for city_files in self.descriptor_files.values():
+            for model_file in city_files.values():
+                model_file.close()
+    
+    def __prepare_data(self, image_folder, resolution, cities, models, nPosSample, nNegSample):
+        self.data, discarded_imgs = [], []
+        for city in cities:
+            city_folder = join(image_folder, city)
+            neighbor_files = {model: h5py.File(join(city_folder, f"neighbors_{model}.h5"), "r") for model in models}
+            images_low_path, images_high_path = join(city_folder, resolution), join(city_folder, self.high_resolution)
+            # For every image, load postives & negatives found by each model 
+            for img_name in listdir(images_low_path):
+                image_data = {}
+                for model, neighbor_file in neighbor_files.items():
+                    image_high_path, image_low_path = join(images_high_path, img_name), join(images_low_path, img_name)
+                    positives_high, negtives_high = [], []
+                    positives_low, negtives_low = [], []
+                    ind = 0
+                    positives_pool = neighbor_file[img_name]["positives"][:]
+                    negtives_pool = neighbor_file[img_name]["negtives"][:]
+                    while len(positives_high) < nPosSample and ind < len(positives_pool):
+                        positive_name = positives_pool[ind].decode("utf-8")
+                        positive_high = join(city_folder, self.high_resolution, positive_name)
+                        positive_low = join(city_folder, resolution, positive_name)
+                        positives_high.append(positive_high)
+                        positives_low.append(positive_low)
+                        ind += 1
+                    ind = 0
+                    while len(negtives_high) < nNegSample and ind < len(negtives_pool):
+                        negative_name = negtives_pool[ind].decode("utf-8")
+                        negtive_high = join(city_folder, self.high_resolution, negative_name)
+                        negtive_low = join(city_folder, resolution, negative_name)
+                        negtives_high.append(negtive_high)
+                        negtives_low.append(negtive_low)
+                        ind += 1
+                    if len(positives_high) == nPosSample and len(negtives_high) == nNegSample:
+                        image_data[model] = [[image_high_path, positives_high, negtives_high], [image_low_path, positives_low, negtives_low]]
+                if len(image_data) == len(neighbor_files):
+                    self.data.append(image_data)
+                else:
+                    discarded_imgs.append(img_name)
+            for file in neighbor_files.values(): file.close()
+        if len(discarded_imgs) > 0:
+            print(f"GSV-Cities dataset discarded {len(discarded_imgs)} for insufficient"
+                  f"neighbors from at least one extractor.\n{discarded_imgs}")
+
 
 def load_pitts250k_data(data, config, models):
     image_folder=data['image_folder']
@@ -242,6 +343,25 @@ def load_pitts250k_data(data, config, models):
         dataset.append(Pitts250k_dataset(image_folder, dataconfig["resolution"], models, gt, image_id, **config["triplet_loss"]))
 
     return dataset
+
+
+def load_gsv_cities_data(dataset_info, train_conf, cities, models):
+    groundtruth, images_path = dataset_info["groundtruth"], dataset_info["images_path"]
+    resolutions = []
+    for dir_entry in listdir(join(images_path, cities[0])):
+        if isdir(join(images_path, cities[0], dir_entry)):
+            resolutions.append(dir_entry)
+    resolutions = sorted(resolutions)
+
+    datasets = []
+    if train_conf["data"]["resolution"] == -1:
+        for resolution in resolutions:
+            if resolution != "raw":
+                datasets.append(GSVCitiesDataset(images_path, resolution, cities, models, groundtruth, **train_conf["triplet_loss"]))
+    else:
+        datasets.append(GSVCitiesDataset(images_path, train_conf["data"]["resolution"], cities, models, groundtruth, **train_conf["triplet_loss"]))
+    return datasets
+
 
 def load_data(image_folder,**config):
     pitch_list=listdir(image_folder)
