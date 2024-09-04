@@ -112,7 +112,7 @@ def collate_fn(batch):
 
 class Pitts250k_dataset(Dataset):
     
-    def __init__(self, image_folder, resolution, models, gt, image_id, **config):
+    def __init__(self, image_folder, resolution, models, gt, image_id, img_names=None, **config):
         self.gt=gt # (1000, 2)
         self.id=image_id # 1000
         self.nPosSample,self.nNegSample=config['nPosSample'],config['nNegSample'] # 1, 5
@@ -122,7 +122,7 @@ class Pitts250k_dataset(Dataset):
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
         neighbor_files = {model: h5py.File(join(image_folder, f"neighbors_{model}.h5"), "r") for model in models}
-        self.__prepare_data(image_folder, neighbor_files)
+        self.__prepare_data(image_folder, neighbor_files, img_names)
         for file in neighbor_files.values(): file.close()
         
     def __getitem__(self, index):
@@ -151,7 +151,7 @@ class Pitts250k_dataset(Dataset):
     def __len__(self):
         return len(self.data)
     
-    def __prepare_data(self, image_folder, neighbor_files):
+    def __prepare_data(self, image_folder, neighbor_files, img_names):
         self.data, discarded_imgs = [], []
         dir_contents, pitch_list = listdir(image_folder), []
         for dir_entry in dir_contents:
@@ -167,6 +167,10 @@ class Pitts250k_dataset(Dataset):
 
                 images_low=listdir(images_low_path)
                 for image in images_low:
+                    if img_names is not None:
+                        orig_name = "_".join([image.rstrip(".jpg"), f"pitch{int(int(pitch) / 30 + 1)}", f"yaw{int(int(yaw) / 30 + 1)}"]) + ".jpg"
+                        if orig_name not in img_names:
+                            continue
                     name, image_data = f"{pitch}+{yaw}+{image}", {}
                     for model, neighbor_file in neighbor_files.items():
                         image_high_path=join(images_high_path,image) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
@@ -233,82 +237,67 @@ def collate_fn_with_high_descriptors(batch):
 
 
 class GSVCitiesDataset(Dataset):
-    high_resolution = "480p"
+    high_resolution = "raw"
     def __init__(self, images_path, resolution, cities, models, groundtruth, **config):
+        self.images_path = images_path
+        self.resolution = resolution
+        self.models = models
         self.groundtruth = groundtruth
+        self.nPosSample, self.nNegSample = config["nPosSample"], config["nNegSample"]
         self.input_transform = transforms.Compose([transforms.ToTensor(),
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-        self.__prepare_data(images_path, resolution, cities, models, config["nPosSample"], config["nNegSample"])
-        self.descriptor_files = {city: {model: h5py.File(join(images_path, city, f"global_descriptor_{model}.h5"), "r") for model in models} for city in cities}
+        self.neighbors_files = {city: {model: h5py.File(join(images_path, city, f"neighbors_{model}.h5"), "r") for model in models} for city in cities}
+        self.__prepare_data(images_path, resolution, cities, config["nPosSample"], config["nNegSample"])
         
     def __getitem__(self, index):
         image_data = {}
-        for model, (high_image_set, low_image_set) in self.data[index].items():
-            # concat image, postive image, and negative images
-            image_high_path, positives_high, negtives_high = high_image_set
-            image_low_path, positives_low, negtives_low = low_image_set
-            city = basename(image_high_path).split("_")[0]
-            images_high, high_descriptors, images_low, images_low_path, locations = [], [], [], [], []
-            for im in [image_high_path] + positives_high + negtives_high:
-                images_high.append(self.input_transform(Image.open(im)))
+        img_name, city = self.data[index]["img_name"], self.data[index]["city"]
+        images_low_path, images_high_path = join(self.images_path, city, self.resolution), join(self.images_path, city, self.high_resolution)
+        for model in self.models:
+            images_high, high_descriptors, images_low, low_paths, locations = [], [], [], [], []
+            neighbor_images_names = []
+            for neighbor_type, neighbor_num in zip(["positives", "negtives"], [self.nPosSample, self.nNegSample]):
+                for neighbor_ind in range(neighbor_num):
+                    neighbor_images_names.append(self.neighbors_files[city][model][img_name][neighbor_type][neighbor_ind].decode("utf-8"))
+            for name in [img_name] + neighbor_images_names:
+                image_high_path, image_low_path = join(images_high_path, name), join(images_low_path, name)
+                images_high.append(self.input_transform(Image.open(image_high_path)))
                 # high_descriptors.append(torch.tensor(self.descriptor_files[city][model]["train"][basename(im)][:]))
+                low_paths.append(image_low_path)
+                images_low.append(self.input_transform(Image.open(image_low_path)))
+                locations.append(self.groundtruth[img_name])    # gt corresponding to the image path
             images_high = torch.stack(images_high)
-            for im in [image_low_path] + positives_low + negtives_low:
-                images_low_path.append(im)
-                images_low.append(self.input_transform(Image.open(im)))
-                locations.append(self.groundtruth[basename(im)]) # gt corresponding to the image path
             images_low = torch.stack(images_low)
             # high_descriptors = torch.stack(high_descriptors)
             locations = torch.tensor(np.array(locations))
-            image_data[model] = [images_high, images_low, images_low_path, locations]
+            image_data[model] = [images_high, images_low, low_paths, locations]
         return image_data
     
     def __len__(self):
         return len(self.data)
     
-    def close_descriptor_files(self):
-        for city_files in self.descriptor_files.values():
+    def close_neighbors_files(self):
+        for city_files in self.neighbors_files.values():
             for model_file in city_files.values():
                 model_file.close()
     
-    def __prepare_data(self, image_folder, resolution, cities, models, nPosSample, nNegSample):
+    def __prepare_data(self, image_folder, resolution, cities, nPosSample, nNegSample):
         self.data, discarded_imgs = [], []
         for city in cities:
             city_folder = join(image_folder, city)
-            neighbor_files = {model: h5py.File(join(city_folder, f"neighbors_{model}.h5"), "r") for model in models}
-            images_low_path, images_high_path = join(city_folder, resolution), join(city_folder, self.high_resolution)
+            images_low_path = join(city_folder, resolution)
             # For every image, load postives & negatives found by each model 
             for img_name in listdir(images_low_path):
-                image_data = {}
-                for model, neighbor_file in neighbor_files.items():
-                    image_high_path, image_low_path = join(images_high_path, img_name), join(images_low_path, img_name)
-                    positives_high, negtives_high = [], []
-                    positives_low, negtives_low = [], []
-                    ind = 0
-                    positives_pool = neighbor_file[img_name]["positives"][:]
-                    negtives_pool = neighbor_file[img_name]["negtives"][:]
-                    while len(positives_high) < nPosSample and ind < len(positives_pool):
-                        positive_name = positives_pool[ind].decode("utf-8")
-                        positive_high = join(city_folder, self.high_resolution, positive_name)
-                        positive_low = join(city_folder, resolution, positive_name)
-                        positives_high.append(positive_high)
-                        positives_low.append(positive_low)
-                        ind += 1
-                    ind = 0
-                    while len(negtives_high) < nNegSample and ind < len(negtives_pool):
-                        negative_name = negtives_pool[ind].decode("utf-8")
-                        negtive_high = join(city_folder, self.high_resolution, negative_name)
-                        negtive_low = join(city_folder, resolution, negative_name)
-                        negtives_high.append(negtive_high)
-                        negtives_low.append(negtive_low)
-                        ind += 1
-                    if len(positives_high) == nPosSample and len(negtives_high) == nNegSample:
-                        image_data[model] = [[image_high_path, positives_high, negtives_high], [image_low_path, positives_low, negtives_low]]
-                if len(image_data) == len(neighbor_files):
-                    self.data.append(image_data)
+                available_models = []
+                for model, neighbor_file in self.neighbors_files[city].items():
+                    positives_pool = neighbor_file[img_name]["positives"]
+                    negatives_pool = neighbor_file[img_name]["negtives"]
+                    if len(positives_pool) >= nPosSample and len(negatives_pool) >= nNegSample:
+                        available_models.append(model)
+                if len(available_models) == len(self.neighbors_files[city]):
+                    self.data.append({"img_name": img_name, "city": city})
                 else:
                     discarded_imgs.append(img_name)
-            for file in neighbor_files.values(): file.close()
         if len(discarded_imgs) > 0:
             print(f"GSV-Cities dataset discarded {len(discarded_imgs)} for insufficient"
                   f"neighbors from at least one extractor.\n{discarded_imgs}")
@@ -318,6 +307,7 @@ def load_pitts250k_data(data, config, models):
     image_folder=data['image_folder']
     gt=data['utm'] # (1000, 2) eg. [585001.41335051, 4477058.99275442]
     image_id=data['id'] # 1000
+    if "img_names" not in data: data["img_names"] = None
 
     dir_contents, pitch_list = listdir(image_folder), []
     for dir_entry in dir_contents:
@@ -338,9 +328,9 @@ def load_pitts250k_data(data, config, models):
     if dataconfig['resolution']==-1:
         for resolution in tqdm(resolution_list,desc=f'loading data from {image_folder}',total=len(resolution_list)):
             if resolution!='raw':
-                dataset.append(Pitts250k_dataset(image_folder, resolution, models, gt, image_id, **config["triplet_loss"]))
+                dataset.append(Pitts250k_dataset(image_folder, resolution, models, gt, image_id, data["img_names"], **config["triplet_loss"]))
     else:
-        dataset.append(Pitts250k_dataset(image_folder, dataconfig["resolution"], models, gt, image_id, **config["triplet_loss"]))
+        dataset.append(Pitts250k_dataset(image_folder, dataconfig["resolution"], models, gt, image_id, data["img_names"], **config["triplet_loss"]))
 
     return dataset
 

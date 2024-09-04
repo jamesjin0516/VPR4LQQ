@@ -65,7 +65,7 @@ vpr:
     MixVPR:
       use: true
       ckpt_path: 'parameters/MixVPR/ckpts/resnet50_MixVPR_4096_channels(1024)_rows(4).ckpt'
-      resized_img_size: [320, 320]    # For MixVPR's pretrained weights, this value cannot change
+      pt_img_size: [320, 320]    # The input image resolution for MixVPR's pretrained weights
       cuda: true
     AnyLoc:
       use: true

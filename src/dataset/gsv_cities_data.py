@@ -43,6 +43,35 @@ TRAIN_CITIES = [
     "PRS"
 ]
 
+CITIES_300x400 = [    # Images for these cities all have height 300 and width 400
+    "OSL",
+    "Bangkok",
+    "Osaka",
+    "WashingtonDC",
+    "TRT",
+    "MexicoCity",
+    "Medellin",
+    "LosAngeles",
+    "PRG",
+    "Barcelona",
+    "BuenosAires",
+    "PRS"
+]
+
+CITIES_480x640 = [    # Images for these cities all have height 480 and width 640
+    "Boston",
+    "Brussels",
+    "Phoenix",
+    "London",
+    "Lisbon",
+    "Melbourne",
+    "Minneapolis",
+    "Miami",
+    "Rome",
+    "Chicago",
+    "Madrid"
+]
+
 
 input_transform = transforms.Compose([
     transforms.ToTensor(),

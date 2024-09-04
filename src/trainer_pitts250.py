@@ -51,6 +51,7 @@ class VPR():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     def __init__(self, configs, data_info, data_name):
         train_conf, self.train_conf = configs["train"], configs["train"]
+        extractors_conf = configs["vpr"]["global_extractor"]
         self.batch_size = train_conf["batch_size"]
         self.lr = train_conf["lr"]
         self.lr_decay = train_conf["lr_decay"]
@@ -58,7 +59,7 @@ class VPR():
         self.thresholds = torch.tensor(configs['vpr']['threshold'])
         self.topk_nodes=torch.tensor(configs['vpr']['topk'])
 
-        self.teacher_models = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"])
+        self.teacher_models = GlobalExtractors(configs["root"], extractors_conf)
 
         logs_root = join(configs["root"], configs["model_IO"]["logs_path"], data_name)
         makedirs(logs_root, exist_ok=True)
@@ -74,12 +75,13 @@ class VPR():
             self.log_dirs[model_name] = join(logs_root, model_suffix)
             makedirs(self.weight_paths[model_name], exist_ok=True)
             if train_conf["resume"]:
-                configs["vpr"]["global_extractor"][model_name]["ckpt_path"] = self.weight_paths[model_name]
+                extractors_conf[model_name]["ckpt_path"] = self.weight_paths[model_name]
+        extractors_conf["MixVPR"]["img_size"] = configs["data"]["compression"]["resolution"][train_conf["data"]["resolution"]]
 
         self.log_writers = {model: SummaryWriter(log_dir=log_dir) for model, log_dir in self.log_dirs.items()}
-        self.student_models = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=train_conf["resume"])
-        self.teacher_models.torch_compile(float32=True, fullgraph=True, dynamic=False, mode="max-autotune", backend="onnxrt")
-        self.student_models.torch_compile(float32=True, fullgraph=True, dynamic=False, mode="max-autotune", backend="aot_ts_nvfuser")
+        self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"])
+        self.teacher_models.torch_compile(float32=True, fullgraph=True, dynamic=False, mode="max-autotune", backend="inductor")
+        self.student_models.torch_compile(float32=True, fullgraph=True, dynamic=False, mode="max-autotune", backend="inductor")
 
         self.start_epochs = {model: self.student_models.last_epoch(model) + 1 if train_conf["resume"] else 0 for model in self.student_models.models}
         self.best_scores = {model: self.student_models.best_score(model) if train_conf["resume"] else 0 for model in self.student_models.models}
@@ -140,13 +142,13 @@ class VPR():
         schedulers = {model: ExponentialLR(optimizer, gamma=self.gamma) for model, optimizer in self.optimizers.items()}
         self.student_models.set_train(True)
         
-        sample_size=40000//len(self.train_data_sets)
-        len_init=self.train_data_sets[0].__len__()
-        indices=[random.sample(list(range(len_init)),sample_size)]
-        for d in self.train_data_sets[1:]:
-            len_current=len_init+d.__len__()
-            indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-            len_init=len_current
+        # sample_size=40000//len(self.train_data_sets)
+        # len_init=self.train_data_sets[0].__len__()
+        # indices=[random.sample(list(range(len_init)),sample_size)]
+        # for d in self.train_data_sets[1:]:
+        #     len_current=len_init+d.__len__()
+        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
+        #     len_init=len_current
 
         # len_init=self.train_data_sets[0].__len__()
         # indices=[list(range(len_init))]
@@ -261,13 +263,13 @@ class VPR():
         random.seed(10)
 
         # Choosing a fixed number of images from each query dataset is currently unused
-        sample_size=1000
-        len_init=self.query_data_sets[0].__len__()
-        indices=[random.sample(list(range(len_init)),sample_size)]
-        for d in self.query_data_sets[1:]:
-            len_current=len_init+d.__len__()
-            indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-            len_init=len_current
+        # sample_size=1000
+        # len_init=self.query_data_sets[0].__len__()
+        # indices=[random.sample(list(range(len_init)),sample_size)]
+        # for d in self.query_data_sets[1:]:
+        #     len_current=len_init+d.__len__()
+        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
+        #     len_init=len_current
         
         # All query images are evaluated for VPR recall
         query_batch=20
@@ -305,13 +307,13 @@ class VPR():
             del recall_score, recall_rate
 
         print('start loss validation ...')
-        sample_size=15
-        len_init=self.valid_data_sets[0].__len__()
-        indices=[random.sample(list(range(len_init)),sample_size)]
-        for d in self.valid_data_sets[1:]:
-            len_current=len_init+d.__len__()
-            indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-            len_init=len_current
+        # sample_size=15
+        # len_init=self.valid_data_sets[0].__len__()
+        # indices=[random.sample(list(range(len_init)),sample_size)]
+        # for d in self.valid_data_sets[1:]:
+        #     len_current=len_init+d.__len__()
+        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
+        #     len_init=len_current
         # All validation images are used
         batch_sampler = BatchSampler([list(range(len(self.valid_data_set)))], self.batch_size)
         data_loader = DataLoader(self.valid_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn, pin_memory=True)
