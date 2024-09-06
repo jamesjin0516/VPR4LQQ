@@ -3,11 +3,13 @@ from third_party.pytorch_NetVlad.Feature_Extractor import NetVladFeatureExtracto
 from third_party.MixVPR.feature_extract import MixVPRFeatureExtractor
 from third_party.AnyLoc.feature_extract import VLADDinoV2FeatureExtractor
 from third_party.salad.feature_extract import DINOV2SaladFeatureExtractor
+from third_party.CricaVPR.feature_extract import CricaVPRFeatureExtractor
 
 
 class GlobalExtractors:
 
-    model_classes = {"MixVPR": MixVPRFeatureExtractor, "AnyLoc": VLADDinoV2FeatureExtractor, "DinoV2Salad": DINOV2SaladFeatureExtractor}
+    model_classes = {"MixVPR": MixVPRFeatureExtractor, "AnyLoc": VLADDinoV2FeatureExtractor, "DinoV2Salad": DINOV2SaladFeatureExtractor,
+                     "CricaVPR": CricaVPRFeatureExtractor}
 
     def __init__(self, root, g_extr_conf, pipeline=False):
         """
@@ -46,13 +48,19 @@ class GlobalExtractors:
         for model in self.models_objs:
             self.models_objs[model].set_train(is_train)
     
-    def torch_compile(self, float32=False, **compile_args):
+    def torch_compile(self, **compile_args):
         """
         Apply torch.compile with all given keyword arguments to all models
-        - float32: whether to also change the models to float32 mode
         """
         for model in self.models_objs:
-            self.models_objs[model].torch_compile(float32, **compile_args)
+            self.models_objs[model].torch_compile(**compile_args)
+    
+    def set_float32(self):
+        """
+        Change all model's precision to torch.float32
+        """
+        for model in self.models_objs:
+            self.models_objs[model].set_float32()
     
     def save_state(self, model, save_path, new_state):
         """

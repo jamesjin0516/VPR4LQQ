@@ -1,15 +1,19 @@
 from os.path import join, exists, basename, isdir
 from os import listdir
+import multiprocessing
 import numpy as np
 import json
 from torch.utils.data import Dataset,Sampler
 import json
+import pandas as pd
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
 from tqdm import tqdm
 import h5py
 import random
+
+from dataset.gsv_cities_data import convert_longlat_to_utm
 
 def chunk(indices, size):
     return torch.split(torch.tensor(indices),size)
@@ -217,90 +221,141 @@ class Pitts250k_dataset(Dataset):
                   f"neighbors from at least one extractor.\n{discarded_imgs}")
 
 
-def collate_fn_with_high_descriptors(batch):
-    reorganized = [dict() for _ in range(5)]    # images_high, high_descriptors, images_low, images_low_path, locations for each model
-    for batch_item in batch:
-        for model, image_data in batch_item.items():
-            # Distribute each type of image_data into the reorganized batch, where each type is still grouped into models
-            for i in range(len(image_data)):
-                if model in reorganized[i]:
-                    reorganized[i][model].append(image_data[i])
-                else:
-                    reorganized[i][model] = [image_data[i]]
-    for model, low_paths in reorganized[3].items():
-        reorganized[3][model] = [tuple(low_paths[batch_ind][path_ind] for batch_ind in range(len(low_paths))) for path_ind in range(len(low_paths[0]))]
-    for data_ind in range(len(reorganized)):
-        if data_ind == 3: continue
-        for model in reorganized[data_ind]:
-            reorganized[data_ind][model] = torch.stack(reorganized[data_ind][model])
-    return reorganized
+def collate_fn_gsv(batch):
+    batch_flattened = []    # Unprocessed batches have sublists for each place picked
+    for place_imgs in batch:
+        batch_flattened.extend(place_imgs)
+    return collate_fn(batch_flattened)
 
+def get_img_name(row):
+    # given a row from the dataframe
+    # return the corresponding image name
+
+    city = row['city_id']
+    
+    # now remove the two digit we added to the id
+    # they are superficially added to make ids different
+    # for different cities
+    pl_id = row["place_id"] % 10**5  #row.name is the index of the row, not to be confused with image name
+    pl_id = str(pl_id).zfill(7)
+    
+    panoid = row['panoid']
+    year = str(row['year']).zfill(4)
+    month = str(row['month']).zfill(2)
+    northdeg = str(row['northdeg']).zfill(3)
+    lat, lon = str(row['lat']), str(row['lon'])
+    name = city+'_'+pl_id+'_'+year+'_'+month+'_' + \
+        northdeg+'_'+lat+'_'+lon+'_'+panoid+'.jpg'
+    return name
 
 class GSVCitiesDataset(Dataset):
     high_resolution = "raw"
-    def __init__(self, images_path, resolution, cities, models, groundtruth, **config):
+    def __init__(self, images_path, data_path, resolution, cities, models, **config):
         self.images_path = images_path
         self.resolution = resolution
         self.models = models
-        self.groundtruth = groundtruth
         self.nPosSample, self.nNegSample = config["nPosSample"], config["nNegSample"]
         self.input_transform = transforms.Compose([transforms.ToTensor(),
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        self.__prepare_data(images_path, data_path, cities, models, config["nPosSample"], config["nNegSample"])
+        self.places_ids = pd.unique(self.img_data.index)
         self.neighbors_files = {city: {model: h5py.File(join(images_path, city, f"neighbors_{model}.h5"), "r") for model in models} for city in cities}
-        self.__prepare_data(images_path, resolution, cities, config["nPosSample"], config["nNegSample"])
         
     def __getitem__(self, index):
-        image_data = {}
-        img_name, city = self.data[index]["img_name"], self.data[index]["city"]
+        image_data = []
+        place_id = self.places_ids[index]
+        place = self.img_data.loc[place_id].sample(n=min(4, len(self.img_data.loc[place_id].index)))
+        city = place.iloc[0]["city_id"]
         images_low_path, images_high_path = join(self.images_path, city, self.resolution), join(self.images_path, city, self.high_resolution)
-        for model in self.models:
-            images_high, high_descriptors, images_low, low_paths, locations = [], [], [], [], []
-            neighbor_images_names = []
-            for neighbor_type, neighbor_num in zip(["positives", "negtives"], [self.nPosSample, self.nNegSample]):
-                for neighbor_ind in range(neighbor_num):
-                    neighbor_images_names.append(self.neighbors_files[city][model][img_name][neighbor_type][neighbor_ind].decode("utf-8"))
-            for name in [img_name] + neighbor_images_names:
-                image_high_path, image_low_path = join(images_high_path, name), join(images_low_path, name)
-                images_high.append(self.input_transform(Image.open(image_high_path)))
-                # high_descriptors.append(torch.tensor(self.descriptor_files[city][model]["train"][basename(im)][:]))
-                low_paths.append(image_low_path)
-                images_low.append(self.input_transform(Image.open(image_low_path)))
-                locations.append(self.groundtruth[img_name])    # gt corresponding to the image path
-            images_high = torch.stack(images_high)
-            images_low = torch.stack(images_low)
-            # high_descriptors = torch.stack(high_descriptors)
-            locations = torch.tensor(np.array(locations))
-            image_data[model] = [images_high, images_low, low_paths, locations]
+        for _, row in place.iterrows():
+            image_data_place = {}
+            img_name = self.get_img_name(row)
+            for model in self.models:
+                images_high, high_descriptors, images_low, low_paths, locations = [], [], [], [], []
+                neighbor_images_names = []
+                for neighbor_type, neighbor_num in zip(["positives", "negtives"], [self.nPosSample, self.nNegSample]):
+                    for neighbor_ind in range(neighbor_num):
+                        neighbor_images_names.append(self.neighbors_files[city][model][img_name][neighbor_type][neighbor_ind].decode("utf-8"))
+                for name in [img_name] + neighbor_images_names:
+                    image_high_path, image_low_path = join(images_high_path, name), join(images_low_path, name)
+                    images_high.append(self.input_transform(Image.open(image_high_path)))
+                    # high_descriptors.append(torch.tensor(self.descriptor_files[city][model]["train"][basename(im)][:]))
+                    low_paths.append(image_low_path)
+                    images_low.append(self.input_transform(Image.open(image_low_path)))
+                    locations.append([row["lat"], row["lon"]])    # gt corresponding to the image path
+                images_high = torch.stack(images_high)
+                images_low = torch.stack(images_low)
+                # high_descriptors = torch.stack(high_descriptors)
+                locations = torch.tensor(convert_longlat_to_utm(np.array(locations)))
+                image_data_place[model] = [images_high, images_low, low_paths, locations]
+            image_data.append(image_data_place)
         return image_data
     
     def __len__(self):
-        return len(self.data)
+        return len(self.places_ids)
     
     def close_neighbors_files(self):
         for city_files in self.neighbors_files.values():
             for model_file in city_files.values():
                 model_file.close()
     
-    def __prepare_data(self, image_folder, resolution, cities, nPosSample, nNegSample):
-        self.data, discarded_imgs = [], []
-        for city in cities:
-            city_folder = join(image_folder, city)
-            images_low_path = join(city_folder, resolution)
-            # For every image, load postives & negatives found by each model 
-            for img_name in listdir(images_low_path):
-                available_models = []
-                for model, neighbor_file in self.neighbors_files[city].items():
-                    positives_pool = neighbor_file[img_name]["positives"]
-                    negatives_pool = neighbor_file[img_name]["negtives"]
-                    if len(positives_pool) >= nPosSample and len(negatives_pool) >= nNegSample:
-                        available_models.append(model)
-                if len(available_models) == len(self.neighbors_files[city]):
-                    self.data.append({"img_name": img_name, "city": city})
-                else:
-                    discarded_imgs.append(img_name)
+    def __prepare_data(self, images_path, data_path, cities, models, nPosSample, nNegSample):
+        discarded_imgs = []
+        cities_args = [(c_ind, cities, images_path, data_path, models, nPosSample, nNegSample) for c_ind in range(len(cities))]
+        with multiprocessing.Pool() as pool:
+            read_results = pool.starmap(read_city_data, cities_args)
+        self.img_data = pd.concat([read_result[0] for read_result in read_results], ignore_index=True).set_index("place_id")
+        for read_result in read_results: discarded_imgs.extend(read_result[1])
         if len(discarded_imgs) > 0:
             print(f"GSV-Cities dataset discarded {len(discarded_imgs)} for insufficient"
                   f"neighbors from at least one extractor.\n{discarded_imgs}")
+    
+    @staticmethod
+    def get_img_name(row):
+        # given a row from the dataframe
+        # return the corresponding image name
+
+        city = row['city_id']
+        
+        # now remove the two digit we added to the id
+        # they are superficially added to make ids different
+        # for different cities
+        pl_id = row.name % 10**5  #row.name is the index of the row, not to be confused with image name
+        pl_id = str(pl_id).zfill(7)
+        
+        panoid = row['panoid']
+        year = str(row['year']).zfill(4)
+        month = str(row['month']).zfill(2)
+        northdeg = str(row['northdeg']).zfill(3)
+        lat, lon = str(row['lat']), str(row['lon'])
+        name = city+'_'+pl_id+'_'+year+'_'+month+'_' + \
+            northdeg+'_'+lat+'_'+lon+'_'+panoid+'.jpg'
+        return name
+
+
+def read_city_data(c_ind, cities, images_path, data_path, models, nPosSample, nNegSample):
+    discarded_imgs = []
+    city_images = pd.read_csv(join(data_path, f"{cities[c_ind]}.csv"))
+    neighbors_files = {model: h5py.File(join(images_path, cities[c_ind], f"neighbors_{model}.h5"), "r") for model in models}
+    # For every image, load postives & negatives found by each model
+    city_images["place_id"] = city_images["place_id"] + (c_ind * 10 ** 5)
+    valid_rows = []
+    for _, row in city_images.iterrows():
+        img_name = get_img_name(row)
+        available_models = []
+        for model, neighbor_file in neighbors_files.items():
+            positives_pool = neighbor_file[img_name]["positives"]
+            negatives_pool = neighbor_file[img_name]["negtives"]
+            if len(positives_pool) >= nPosSample and len(negatives_pool) >= nNegSample:
+                available_models.append(model)
+        valid_rows.append(len(available_models) == len(neighbors_files))
+    valid_rows = pd.Series(valid_rows)
+    valid_imgs = city_images[valid_rows].sample(frac=1)
+    if len(valid_imgs.index) != len(city_images.index):
+        discarded_imgs.extend(city_images[~valid_rows].apply(get_img_name).to_list())
+    for file in neighbors_files.values():
+        file.close()
+    return valid_imgs, discarded_imgs
 
 
 def load_pitts250k_data(data, config, models):
@@ -336,7 +391,7 @@ def load_pitts250k_data(data, config, models):
 
 
 def load_gsv_cities_data(dataset_info, train_conf, cities, models):
-    groundtruth, images_path = dataset_info["groundtruth"], dataset_info["images_path"]
+    images_path, data_path = join(dataset_info["base_path"], "Images"), join(dataset_info["base_path"], "Dataframes")
     resolutions = []
     for dir_entry in listdir(join(images_path, cities[0])):
         if isdir(join(images_path, cities[0], dir_entry)):
@@ -347,9 +402,9 @@ def load_gsv_cities_data(dataset_info, train_conf, cities, models):
     if train_conf["data"]["resolution"] == -1:
         for resolution in resolutions:
             if resolution != "raw":
-                datasets.append(GSVCitiesDataset(images_path, resolution, cities, models, groundtruth, **train_conf["triplet_loss"]))
+                datasets.append(GSVCitiesDataset(images_path, data_path, resolution, cities, models, **train_conf["triplet_loss"]))
     else:
-        datasets.append(GSVCitiesDataset(images_path, train_conf["data"]["resolution"], cities, models, groundtruth, **train_conf["triplet_loss"]))
+        datasets.append(GSVCitiesDataset(images_path, data_path, train_conf["data"]["resolution"], cities, models, **train_conf["triplet_loss"]))
     return datasets
 
 

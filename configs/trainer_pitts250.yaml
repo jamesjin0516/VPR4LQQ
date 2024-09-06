@@ -100,4 +100,8 @@ vpr:
       ckpt_path: 'parameters/DinoV2Salad/ckpts/dino_salad.ckpt'
       max_image_size: 1024    # To prevent out of memory
       cuda: true
+    CricaVPR:
+      use: true
+      ckpt_path: 'parameters/CricaVPR/ckpts/CricaVPR.pth'
+      cuda: true
   local_feature: 'superpoint'

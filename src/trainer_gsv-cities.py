@@ -11,8 +11,8 @@ import argparse
 from os.path import basename, join
 from os import makedirs
 
-from dataset.Data_Control import collate_fn, load_gsv_cities_data, load_pitts250k_data, BatchSampler
-from dataset.gsv_cities_data import convert_longlat_to_utm, read_gt, CITIES_300x400, CITIES_480x640
+from dataset.Data_Control import collate_fn, collate_fn_gsv, load_gsv_cities_data, load_pitts250k_data, BatchSampler
+from dataset.gsv_cities_data import CITIES_300x400, CITIES_480x640
 
 from loss.loss_distill import Loss_distill
 from feature.Global_Extractors import GlobalExtractors
@@ -70,6 +70,8 @@ class VPR():
 
         self.log_writers = {model: SummaryWriter(log_dir=log_dir) for model, log_dir in self.log_dirs.items()}
         self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"])
+        self.teacher_models.set_float32()
+        self.student_models.set_float32()
 
         self.start_epochs = {model: self.student_models.last_epoch(model) + 1 if train_conf["resume"] else 0 for model in self.student_models.models}
         self.best_scores = {model: self.student_models.best_score(model) if train_conf["resume"] else 0 for model in self.student_models.models}
@@ -120,7 +122,7 @@ class VPR():
     def train_loop(self, train_data_set, scaler, schedulers, pbar, epoch):
         # All training images are used
         batch_sampler = BatchSampler([list(range(len(train_data_set)))], self.batch_size)
-        data_loader = DataLoader(train_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn, pin_memory=True)
+        data_loader = DataLoader(train_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn_gsv, pin_memory=True)
 
         enabled_loss_types = set(loss_type for loss_type, enabled in self.train_conf["loss"].items() if enabled).union(["loss"])
         models_losses = {model: {loss_type: 0 for loss_type in enabled_loss_types} for model in self.student_models.models}
@@ -295,9 +297,6 @@ class VPR():
 
 def main(configs):
     root = configs["root"]
-    longlat_coords, image_names = read_gt(join(root, "logs", "GSV-Cities", "Images"))
-    utm_coords = convert_longlat_to_utm(longlat_coords)
-
 
     gt_path = join(root, "logs", "pitts250k", "pittsburgh_query_1000_utm.mat")
     query_gt = scipy.io.loadmat(gt_path)["Cq"].T
@@ -309,7 +308,7 @@ def main(configs):
     pitts30k_db, pitts30k_q = [basename(f[0].item()) for f in val_info[1]], [basename(f[0].item()) for f in val_info[3]]
     db_gt = val_info[2].T
     
-    data_info = {"train": {"images_path": join(root, "logs", "GSV-Cities", "Images"), "groundtruth": dict(zip(image_names, utm_coords))},
+    data_info = {"train": {"base_path": join(root, "logs", "GSV-Cities")},
                  "database": {"images_path": join(root, "logs", "pitts250k", "database"), "groundtruth": db_gt, "img_names": pitts30k_db},
                  "query": {"image_folder": join(root, "logs", "pitts250k", "query"), "utm": query_gt, "id": query_id, "img_names": pitts30k_q}}
     
