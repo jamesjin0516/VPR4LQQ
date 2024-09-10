@@ -29,10 +29,10 @@ data:
 train:
   video:
     sequence_num: 3
-  nepoch: 6
-  evalEvery: 1
-  batch_size: 15
-  num_worker: 5
+  nepoch: 1
+  nparts: 6    # (Only for GSV-Cities) Split the training dataset into 1/nparts partitions
+  batch_size: 6
+  num_worker: 4
   num_cluster: 64
   cacheRefreshRate: 1000
   nGPU: 2

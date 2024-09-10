@@ -5,8 +5,10 @@ import cv2
 import h5py
 from os import listdir, mkdir, rename
 from os.path import basename, exists, join, splitext
+import multiprocessing
 import numpy as np
 from PIL import Image
+import resource
 from sklearn.neighbors import NearestNeighbors
 import torch
 from torchvision import transforms
@@ -109,8 +111,8 @@ def extract_descriptors(image_path, city, model, global_extractors):
         image = Image.open(join(images_high_path, im))
         if image.mode != "RGB": image = image.convert("RGB")
         image = input_transform(image)
-        # If 20 images read, no more images to read, or image resolution changed, compute descriptors
-        if i % 20 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
+        # If 200 images read, no more images to read, or image resolution changed, compute descriptors
+        if i % 200 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
             if i > 0:
                 batched_imgs = torch.stack(images_list)
                 encodings, descriptors = global_extractors(model, batched_imgs)
@@ -125,7 +127,45 @@ def extract_descriptors(image_path, city, model, global_extractors):
     hfile.close()
 
 
+def neighbor_mathcer(batch_idx, batch_size, descriptors, names, indices_to_add, nontrivial_positives, potential_negatives, nPosSample):
+    start_idx = batch_idx * batch_size
+    end_idx = min((batch_idx + 1) * batch_size, len(names))
+    if len(indices_to_add.intersection(range(start_idx, end_idx))) == 0: return None
+    descriptor_batch = descriptors[start_idx:end_idx]
+    # Compute the similarity matrix for the batch against all descriptors
+    sim_batch = torch.einsum("id,jd->ij", descriptor_batch, descriptors).float()
+    for i in range(descriptor_batch.shape[0]):
+        sim_batch[i, start_idx + i] = 0
+    
+    matched_info = []
+    # Between start and end index, keep only uncalculated indices (ie. the corresponding image isn't in neighbors file)
+    for i in [ind - start_idx for ind in indices_to_add.intersection(range(start_idx, end_idx))]:
+        name = names[start_idx + i]
+        sim = sim_batch[i]
+        feature_closed = torch.topk(sim, descriptors.size(0), dim=0).indices.numpy()
+        
+        physical_closed = set([names[ind] for ind in nontrivial_positives[start_idx + i]])
+        
+        negatives = [names[ind] for ind in potential_negatives[start_idx + i]]
+        negatives = random.sample(negatives, 100)
+
+        positives = []
+        ind = 0
+        while len(positives) < nPosSample * 20:
+            key = names[feature_closed[ind]]
+            if key in physical_closed:
+                positives.append(names[feature_closed[ind]])
+            ind += 1
+            if ind >= len(feature_closed):
+                break
+
+        if len(positives) > 0:
+            matched_info.append((name, positives, negatives))
+    return matched_info
+
+
 def find_neighbors(images_path, city, model, all_coords, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample):
+    print(f"{city} memory start of neighbors: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}")
     hfile_neighbor_path = join(images_path, city, f"neighbors_{model}.h5")
     hfile_path = join(images_path, city, f"global_descriptor_{model}.h5")
     hfile = h5py.File(hfile_path, "r")
@@ -139,6 +179,17 @@ def find_neighbors(images_path, city, model, all_coords, global_descriptor_dim, 
         city_coords[i, :] = all_coords[img_name]
         descriptors[i, :] = img_feat.__array__()
     hfile.close()
+
+    # Open the HDF5 file for storing neighbors
+    hfile = h5py.File(hfile_neighbor_path, "a")
+    existing_indices = set(names.index(name) for name in set(hfile))
+    indices_to_add = set(range(len(names))).difference(existing_indices)
+
+    if len(indices_to_add) == 0:
+        print(f"{city} {basename(hfile_neighbor_path)} already contains all images.")
+        hfile.close()
+        return
+
     locations = convert_longlat_to_utm(city_coords)
 
     knn = NearestNeighbors(n_jobs=-1)
@@ -158,54 +209,19 @@ def find_neighbors(images_path, city, model, all_coords, global_descriptor_dim, 
     descriptors = torch.from_numpy(descriptors)
     batch_size = 1000  # or any other batch size you find suitable
 
-    # Open the HDF5 file for storing neighbors
-    hfile = h5py.File(hfile_neighbor_path, "a")
-    existing_indices = set(names.index(name) for name in set(hfile))
-    indices_to_add = set(range(len(names))).difference(existing_indices)
-
     # Iterate through batches to find neighbors
     num_batches = int(np.ceil(len(names)/batch_size))
-    
-    if len(indices_to_add) == 0:
-        print(f"{city} {basename(hfile_neighbor_path)} already contains all images.")
-        hfile.close()
-        return
-    for batch_idx in tqdm(range(num_batches), desc=f"{city} {basename(hfile_neighbor_path)}"):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, len(names))
-        if len(indices_to_add.intersection(range(start_idx, end_idx))) == 0: continue
-        descriptor_batch = descriptors[start_idx:end_idx]
-        # Compute the similarity matrix for the batch against all descriptors
-        sim_batch = torch.einsum("id,jd->ij", descriptor_batch, descriptors).float()
-        for i in range(descriptor_batch.shape[0]):
-            sim_batch[i, start_idx + i] = 0
-        
-        # Between start and end index, keep only uncalculated indices (ie. the corresponding image isn't in neighbors file)
-        for i in [ind - start_idx for ind in indices_to_add.intersection(range(start_idx, end_idx))]:
-            name = names[start_idx + i]
-            sim = sim_batch[i]
-            feature_closed = torch.topk(sim, descriptors.size(0), dim=0).indices.numpy()
-            
-            physical_closed = set([names[ind] for ind in nontrivial_positives[start_idx + i]])
-            
-            negtives = [names[ind] for ind in potential_negatives[start_idx + i]]
-            negtives = random.sample(negtives, 100)
-
-            positives = []
-            ind = 0
-            while len(positives) < nPosSample * 20:
-                key = names[feature_closed[ind]]
-                if key in physical_closed:
-                    positives.append(names[feature_closed[ind]])
-                ind += 1
-                if ind >= len(feature_closed):
-                    break
-
-            if len(positives) > 0:
-                grp = hfile.create_group(name)
-                grp.create_dataset("positives", data=positives)
-                grp.create_dataset("negtives", data=negtives)
-
+    matcher_args = [(batch_idx, batch_size, descriptors, names, indices_to_add, nontrivial_positives, potential_negatives, nPosSample)
+                    for batch_idx in range(num_batches)]
+    # with multiprocessing.Pool(1 if city == "London" else 2) as pool:    # TODO: remove hardcoded London
+    #     for matched_info in tqdm(pool.imap_unordered(neighbor_mathcer, matcher_args, chunksize=10), total=num_batches):
+    for arg in tqdm(matcher_args, desc=f"{city} {basename(hfile_neighbor_path)}"):
+        matched_info = neighbor_mathcer(*arg)
+        if matched_info is not None:
+            for img_neighbor_info in matched_info:
+                grp = hfile.create_group(img_neighbor_info[0])
+                grp.create_dataset("positives", data=img_neighbor_info[1])
+                grp.create_dataset("negtives", data=img_neighbor_info[2])
     hfile.close()
 
 
@@ -257,6 +273,7 @@ def read_gt(images_path):
 
 
 def main(config):
+    config["vpr"]["global_extractor"]["CricaVPR"]["cuda"] = False    # TODO: remove
     global_extractors = GlobalExtractors(config["root"], config["vpr"]["global_extractor"], pipeline=False)
     dataset_source, dataset_dest = join(config["root"], "data", "third_party", "GSV-Cities"), join(config["root"], "logs", "GSV-Cities")
     if not exists(dataset_dest):
@@ -282,7 +299,7 @@ def main(config):
 
 
 if __name__=="__main__":
-    device="cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.set_grad_enabled(False)
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", type=str, default="../configs/trainer_pitts250.yaml")

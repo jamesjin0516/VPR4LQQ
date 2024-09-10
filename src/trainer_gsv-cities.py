@@ -1,3 +1,4 @@
+import math
 import random
 import shutil
 import h5py
@@ -82,10 +83,18 @@ class VPR():
         self.database = self.load_database(data_info["database"])
         self.query_data_sets = load_pitts250k_data(data_info["query"], train_conf, self.student_models.models)
         self.query_data_set = ConcatDataset(self.query_data_sets)
-        self.train_data_sets = []
+        for model in self.best_scores:    # TODO: temporary fix to correct best scores from recall scores to recall rates
+            if self.best_scores[model] > 1: self.best_scores[model] /= len(self.query_data_set)
+        self.train_data_sets, self.train_indicies = [], []
         for cities in [CITIES_300x400, CITIES_480x640]:
-            train_data_per_res = load_gsv_cities_data(data_info["train"], train_conf, cities, self.student_models.models)
-            self.train_data_sets.append(ConcatDataset(train_data_per_res))
+            train_data_per_res = ConcatDataset(load_gsv_cities_data(data_info["train"], train_conf, cities, self.student_models.models))
+            # Randomly split the dataset into 6 parts to have more frequent validations
+            data_indices = list(range(len(train_data_per_res)))
+            random.shuffle(data_indices)
+            part_s, mod = divmod(len(data_indices), train_conf["nparts"])
+            split_indices = [data_indices[part_i * part_s + min(part_i, mod) : (part_i + 1) * part_s + min(part_i + 1, mod)] for part_i in range(train_conf["nparts"])]
+            self.train_indicies.append(split_indices)
+            self.train_data_sets.append(train_data_per_res)
 
         self.similarity_loss = Loss_distill().to(self.device)
         self.vlad_mse_loss = nn.MSELoss().to(self.device)
@@ -119,14 +128,14 @@ class VPR():
 
         return {"images_path": img_paths, "descriptors": descriptors, "locations": locations}
 
-    def train_loop(self, train_data_set, scaler, schedulers, pbar, epoch):
+    def train_loop(self, train_data_set, data_indexes, scaler, schedulers, pbar, epoch, batch_size):    # TODO: remove batch size arg and replace with self.batch_size
         # All training images are used
-        batch_sampler = BatchSampler([list(range(len(train_data_set)))], self.batch_size)
+        batch_sampler = BatchSampler([data_indexes], batch_size)
         data_loader = DataLoader(train_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn_gsv, pin_memory=True)
 
         enabled_loss_types = set(loss_type for loss_type, enabled in self.train_conf["loss"].items() if enabled).union(["loss"])
         models_losses = {model: {loss_type: 0 for loss_type in enabled_loss_types} for model in self.student_models.models}
-        for images_high, images_low, _, _ in data_loader:
+        for images_high, images_low, _, locations in data_loader:
             for optimizer in self.optimizers.values(): optimizer.zero_grad()
             curr_losses = {model: {loss_type: 0 for loss_type in enabled_loss_types} for model in models_losses}
             features_low, vectors_low = self._compute_image_descriptors(images_low, self.student_models, models_losses.keys(), True)
@@ -162,19 +171,19 @@ class VPR():
 
             loss_desc = " ".join([f"{model} ep#{self.start_epochs[model] + epoch} loss: {losses['loss']:.4e} (lr: {self.optimizers[model].param_groups[0]['lr']:.4e})"
                                     for model, losses in curr_losses.items()])
-            progress_desc = f"Epoch {epoch + 1}/{self.train_conf['nepoch']} " + loss_desc
+            progress_desc = f"Epoch {epoch + 1}/{self.train_conf['nepoch'] * self.train_conf['nparts']} " + loss_desc
             pbar.set_description(progress_desc, refresh=False)
             pbar.update(1)
 
             for model, losses in curr_losses.items():
                 for loss_name, loss_value in losses.items():
                     models_losses[model][loss_name] += loss_value
-            del images_high, images_low, curr_losses, features_low, vectors_low, features_high, vectors_high
+            del images_high, images_low, curr_losses, features_low, vectors_low, features_high, vectors_high, locations
             torch.cuda.empty_cache()
         return models_losses
 
     def train_student(self, epoch):
-        
+        ds_part_ind = epoch % self.train_conf["nparts"]
         self.optimizers = {model: optim.Adam(self.student_models.model_parameters(model), lr=self.lr, weight_decay=self.lr_decay, foreach=True)
                            for model in self.student_models.models}
 
@@ -183,11 +192,12 @@ class VPR():
 
         scaler = GradScaler()
 
-        image_total = sum([len(self.train_data_sets[ds_ind]) for ds_ind in range(len(self.train_data_sets))])
-        progress_bar = tqdm(total=image_total // self.batch_size + 1)
-        total_losses = self.train_loop(self.train_data_sets[0], scaler, schedulers, progress_bar, epoch)
+        image_total = sum([len(self.train_indicies[ds_ind][ds_part_ind]) for ds_ind in range(len(self.train_data_sets))])
+        progress_bar = tqdm(total=math.ceil(image_total / self.batch_size))
+        total_losses = self.train_loop(self.train_data_sets[0], self.train_indicies[0][ds_part_ind], scaler, schedulers, progress_bar, epoch, self.batch_size)    # TODO: remove batch_size argument
         for ds_ind in range(1, len(self.train_data_sets)):
-            models_losses = self.train_loop(self.train_data_sets[ds_ind], scaler, schedulers, progress_bar, epoch)
+            models_losses = self.train_loop(self.train_data_sets[ds_ind], self.train_indicies[ds_ind][ds_part_ind], scaler, schedulers, progress_bar, epoch,
+                                            (self.batch_size // 3) if "CricaVPR" in self.student_models.models else self.batch_size)    # TODO: remove batch_size argument
             for model, losses in models_losses.items():
                 for loss_name, loss_value in losses.items():
                     total_losses[model][loss_name] += loss_value
@@ -239,8 +249,6 @@ class VPR():
 
         self.student_models.set_train(False)
 
-        random.seed(10)
-
         # Choosing a fixed number of images from each query dataset is currently unused
         # sample_size=1000
         # len_init=self.query_data_sets[0].__len__()
@@ -254,11 +262,11 @@ class VPR():
         query_batch=20
         batch_sampler=BatchSampler([list(range(len(self.query_data_set)))], query_batch)
         data_loader = DataLoader(self.query_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn, pin_memory=True)
-        total = len(self.query_data_set) // query_batch + 1
+        total = math.ceil(len(self.query_data_set) / query_batch)
 
         recall_score = {model: {version: torch.zeros((self.thresholds.shape[0], self.topk_nodes.shape[0])) for version in ["teacher", "student"]} for model in self.teacher_models.models}
         with torch.no_grad():
-            for _, images_low, images_low_path, locations in tqdm(data_loader, total=total):
+            for images_high, images_low, images_low_path, locations in tqdm(data_loader, total=total):
                 features_low, vectors_low = self._compute_image_descriptors(images_low, self.student_models, recall_score.keys())
                 features_teacher_low, vectors_teacher_low = self._compute_image_descriptors(images_low, self.teacher_models, recall_score.keys())
 
@@ -266,7 +274,7 @@ class VPR():
                     locations_model = locations[model][:,0,:]
                     recall_score[model]["student"] += self.vpr_examing(vectors_low[model], self.database["descriptors"][model], locations_model, self.database["locations"])
                     recall_score[model]["teacher"] += self.vpr_examing(vectors_teacher_low[model], self.database["descriptors"][model], locations_model, self.database["locations"])
-                del images_low, images_low_path, locations, features_teacher_low, features_low, vectors_low, vectors_teacher_low
+                del images_high, images_low, images_low_path, locations, features_teacher_low, features_low, vectors_low, vectors_teacher_low
 
             recall_rate = {model: {version: recall_score[model][version] / len(self.query_data_set) for version in ["teacher", "student"]} for model in recall_score}
 
@@ -275,7 +283,7 @@ class VPR():
                     self.log_writers[model].add_scalars(f"Recall rate/@{int(topk)}", {version: rate[version][0,i] for version in rate}, self.start_epochs[model] + ind)
 
             for model in self.student_models.models:
-                new_state = {"epoch": self.start_epochs[model] + ind, "best_score": recall_score[model]["student"][0, 0]}
+                new_state = {"epoch": self.start_epochs[model] + ind, "best_score": recall_rate[model]["student"][0, 0]}
                 save_path = join(self.weight_paths[model], "checkpoint.pth")
                 self.student_models.save_state(model, save_path, new_state)
                 if new_state["best_score"] >= self.best_scores[model]:
@@ -314,7 +322,7 @@ def main(configs):
     
     vpr = VPR(configs, data_info, "GSV-Cities")
 
-    for epoch in range(0, configs["train"]["nepoch"]):
+    for epoch in range(0, configs["train"]["nparts"] * configs["train"]["nepoch"]):
         vpr.train_student(epoch)
         vpr.validation(epoch)
     for dataset_per_res in vpr.train_data_sets:
@@ -324,6 +332,7 @@ def main(configs):
 
 
 if __name__=="__main__":
+    random.seed()
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", type=str, default="../configs/trainer_pitts250.yaml")
     parser.add_argument("-l", "--loss-num", type=int, help="The loss combination to use (index [1-7] for the permutations of the 3 losses)")

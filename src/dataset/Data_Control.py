@@ -105,8 +105,8 @@ def collate_fn(batch):
                     reorganized[i][model].append(image_data[i])
                 else:
                     reorganized[i][model] = [image_data[i]]
-    for model, low_paths in reorganized[2].items():
-        reorganized[2][model] = [tuple(low_paths[batch_ind][path_ind] for batch_ind in range(len(low_paths))) for path_ind in range(len(low_paths[0]))]
+    # for model, low_paths in reorganized[2].items():    # TODO: undo comment
+    #     reorganized[2][model] = [tuple(low_paths[batch_ind][path_ind] for batch_ind in range(len(low_paths))) for path_ind in range(len(low_paths[0]))]
     for data_ind in range(len(reorganized)):
         if data_ind == 2: continue
         for model in reorganized[data_ind]:
@@ -254,17 +254,19 @@ class GSVCitiesDataset(Dataset):
         self.images_path = images_path
         self.resolution = resolution
         self.models = models
+        self.imgs_per_place = 2 if "AnyLoc" in models else 4    # TODO: make this configurable per model
         self.nPosSample, self.nNegSample = config["nPosSample"], config["nNegSample"]
         self.input_transform = transforms.Compose([transforms.ToTensor(),
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
         self.__prepare_data(images_path, data_path, cities, models, config["nPosSample"], config["nNegSample"])
         self.places_ids = pd.unique(self.img_data.index)
         self.neighbors_files = {city: {model: h5py.File(join(images_path, city, f"neighbors_{model}.h5"), "r") for model in models} for city in cities}
+        print(f"GSV-Cities dataset loaded; images per place: {self.imgs_per_place}; cities: {cities}")
         
     def __getitem__(self, index):
         image_data = []
         place_id = self.places_ids[index]
-        place = self.img_data.loc[place_id].sample(n=min(4, len(self.img_data.loc[place_id].index)))
+        place = self.img_data.loc[place_id].sample(n=min(self.imgs_per_place, len(self.img_data.loc[place_id].index)))
         city = place.iloc[0]["city_id"]
         images_low_path, images_high_path = join(self.images_path, city, self.resolution), join(self.images_path, city, self.high_resolution)
         for _, row in place.iterrows():
@@ -280,7 +282,7 @@ class GSVCitiesDataset(Dataset):
                     image_high_path, image_low_path = join(images_high_path, name), join(images_low_path, name)
                     images_high.append(self.input_transform(Image.open(image_high_path)))
                     # high_descriptors.append(torch.tensor(self.descriptor_files[city][model]["train"][basename(im)][:]))
-                    low_paths.append(image_low_path)
+                    # low_paths.append(image_low_path)    # TODO: undo comment
                     images_low.append(self.input_transform(Image.open(image_low_path)))
                     locations.append([row["lat"], row["lon"]])    # gt corresponding to the image path
                 images_high = torch.stack(images_high)
