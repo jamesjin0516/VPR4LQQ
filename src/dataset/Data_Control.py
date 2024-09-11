@@ -227,26 +227,6 @@ def collate_fn_gsv(batch):
         batch_flattened.extend(place_imgs)
     return collate_fn(batch_flattened)
 
-def get_img_name(row):
-    # given a row from the dataframe
-    # return the corresponding image name
-
-    city = row['city_id']
-    
-    # now remove the two digit we added to the id
-    # they are superficially added to make ids different
-    # for different cities
-    pl_id = row["place_id"] % 10**5  #row.name is the index of the row, not to be confused with image name
-    pl_id = str(pl_id).zfill(7)
-    
-    panoid = row['panoid']
-    year = str(row['year']).zfill(4)
-    month = str(row['month']).zfill(2)
-    northdeg = str(row['northdeg']).zfill(3)
-    lat, lon = str(row['lat']), str(row['lon'])
-    name = city+'_'+pl_id+'_'+year+'_'+month+'_' + \
-        northdeg+'_'+lat+'_'+lon+'_'+panoid+'.jpg'
-    return name
 
 class GSVCitiesDataset(Dataset):
     high_resolution = "raw"
@@ -271,7 +251,7 @@ class GSVCitiesDataset(Dataset):
         images_low_path, images_high_path = join(self.images_path, city, self.resolution), join(self.images_path, city, self.high_resolution)
         for _, row in place.iterrows():
             image_data_place = {}
-            img_name = self.get_img_name(row)
+            img_name = self.get_img_name(row, True)
             for model in self.models:
                 images_high, high_descriptors, images_low, low_paths, locations = [], [], [], [], []
                 neighbor_images_names = []
@@ -305,7 +285,7 @@ class GSVCitiesDataset(Dataset):
         discarded_imgs = []
         cities_args = [(c_ind, cities, images_path, data_path, models, nPosSample, nNegSample) for c_ind in range(len(cities))]
         with multiprocessing.Pool() as pool:
-            read_results = pool.starmap(read_city_data, cities_args)
+            read_results = pool.starmap(GSVCitiesDataset.read_city_data, cities_args)
         self.img_data = pd.concat([read_result[0] for read_result in read_results], ignore_index=True).set_index("place_id")
         for read_result in read_results: discarded_imgs.extend(read_result[1])
         if len(discarded_imgs) > 0:
@@ -313,7 +293,7 @@ class GSVCitiesDataset(Dataset):
                   f"neighbors from at least one extractor.\n{discarded_imgs}")
     
     @staticmethod
-    def get_img_name(row):
+    def get_img_name(row, place_id_index=False):
         # given a row from the dataframe
         # return the corresponding image name
 
@@ -322,7 +302,7 @@ class GSVCitiesDataset(Dataset):
         # now remove the two digit we added to the id
         # they are superficially added to make ids different
         # for different cities
-        pl_id = row.name % 10**5  #row.name is the index of the row, not to be confused with image name
+        pl_id = (row.name if place_id_index else row["place_id"]) % 10**5  #row.name is the index of the row, not to be confused with image name
         pl_id = str(pl_id).zfill(7)
         
         panoid = row['panoid']
@@ -334,30 +314,30 @@ class GSVCitiesDataset(Dataset):
             northdeg+'_'+lat+'_'+lon+'_'+panoid+'.jpg'
         return name
 
-
-def read_city_data(c_ind, cities, images_path, data_path, models, nPosSample, nNegSample):
-    discarded_imgs = []
-    city_images = pd.read_csv(join(data_path, f"{cities[c_ind]}.csv"))
-    neighbors_files = {model: h5py.File(join(images_path, cities[c_ind], f"neighbors_{model}.h5"), "r") for model in models}
-    # For every image, load postives & negatives found by each model
-    city_images["place_id"] = city_images["place_id"] + (c_ind * 10 ** 5)
-    valid_rows = []
-    for _, row in city_images.iterrows():
-        img_name = get_img_name(row)
-        available_models = []
-        for model, neighbor_file in neighbors_files.items():
-            positives_pool = neighbor_file[img_name]["positives"]
-            negatives_pool = neighbor_file[img_name]["negtives"]
-            if len(positives_pool) >= nPosSample and len(negatives_pool) >= nNegSample:
-                available_models.append(model)
-        valid_rows.append(len(available_models) == len(neighbors_files))
-    valid_rows = pd.Series(valid_rows)
-    valid_imgs = city_images[valid_rows].sample(frac=1)
-    if len(valid_imgs.index) != len(city_images.index):
-        discarded_imgs.extend(city_images[~valid_rows].apply(get_img_name).to_list())
-    for file in neighbors_files.values():
-        file.close()
-    return valid_imgs, discarded_imgs
+    @staticmethod
+    def read_city_data(c_ind, cities, images_path, data_path, models, nPosSample, nNegSample):
+        discarded_imgs = []
+        city_images = pd.read_csv(join(data_path, f"{cities[c_ind]}.csv"))
+        neighbors_files = {model: h5py.File(join(images_path, cities[c_ind], f"neighbors_{model}.h5"), "r") for model in models}
+        # For every image, load postives & negatives found by each model
+        city_images["place_id"] = city_images["place_id"] + (c_ind * 10 ** 5)
+        valid_rows = []
+        for _, row in city_images.iterrows():
+            img_name = GSVCitiesDataset.get_img_name(row)
+            available_models = []
+            for model, neighbor_file in neighbors_files.items():
+                positives_pool = neighbor_file[img_name]["positives"]
+                negatives_pool = neighbor_file[img_name]["negtives"]
+                if len(positives_pool) >= nPosSample and len(negatives_pool) >= nNegSample:
+                    available_models.append(model)
+            valid_rows.append(len(available_models) == len(neighbors_files))
+        valid_rows = pd.Series(valid_rows)
+        valid_imgs = city_images[valid_rows].sample(frac=1)
+        if len(valid_imgs.index) != len(city_images.index):
+            discarded_imgs.extend(city_images[~valid_rows].apply(GSVCitiesDataset.get_img_name).to_list())
+        for file in neighbors_files.values():
+            file.close()
+        return valid_imgs, discarded_imgs
 
 
 def load_pitts250k_data(data, config, models):

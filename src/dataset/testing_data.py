@@ -48,11 +48,12 @@ def extract_descriptors(image_folder, model, save_dir):
         image = Image.open(join(images_high_path, im))
         if image.mode != "RGB": image = image.convert("RGB")
         image = input_transform()(image)
-        # If 5 images read, no more images to read, or image resolution changed, compute descriptors
-        if i % 5 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
+        # If 80 images read, no more images to read, or image resolution changed, compute descriptors
+        if i % 80 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
             if i > 0:
                 batched_imgs = torch.stack(images_list)
-                encodings, descriptors = global_extractors(model, batched_imgs)
+                with torch.no_grad():
+                    encodings, descriptors = global_extractors(model, batched_imgs)
                 for name, descriptor in zip(images_name, descriptors.cpu()):
                     grp.create_dataset(name, data=descriptor)
                 del batched_imgs, descriptors
@@ -256,6 +257,7 @@ if __name__ == '__main__':
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     parser.add_argument("--test_set", type=str, help="Name of dataset to use")
     parser.add_argument("--trained", action="store_true", help="Whether to use trained models")
+    parser.add_argument("-l", "--loss-num", type=int, help="The loss combination to use (index [1-7] for the permutations of the 3 losses)")
     args = parser.parse_args()
     with open(args.config, "r") as f:
         configs = yaml.safe_load(f)
@@ -263,17 +265,26 @@ if __name__ == '__main__':
         data_info = yaml.safe_load(d_locs_file)
     if args.test_set is not None:
         configs["test_data"]["name"] = args.test_set
+    # Allows for choosing 1 combination of the 3 available losses through specifying an integer
+    if args.loss_num is not None:
+        loss_combs = [(True, True, True), (True, True, False), (True, False, True), (True, False, False), (False, True, True), (False, True, False), (False, False, True)]
+        for enabled, loss_type in zip(loss_combs[args.loss_num - 1], configs["train_conf"]["loss"]):
+            configs["train_conf"]["loss"][loss_type] = enabled
     
     # For finding model weights / saving computed descriptors, assemble directory names according to training configurations
     train_conf = configs["train_conf"]
-    log_suffix = join(train_conf["data"]["name"] + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
-                        + ("_triplet" if train_conf["loss"]["triplet"] else ""), "{}",
-                        str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
-    if args.trained:
+    test_finetuned = train_conf["finetuned"]
+    if test_finetuned:
+        log_suffix = join(f"{train_conf['data']['name']}_finetuned", "{}")
+    else:
+        log_suffix = join(train_conf["data"]["name"] + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
+                            + ("_triplet" if train_conf["loss"]["triplet"] else ""), "{}",
+                            str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
+    if args.trained or test_finetuned:
         for model_name, model_conf in configs["vpr"]["global_extractor"].items():
             model_conf["ckpt_path"] = join(configs["root"], configs["model_IO"]["weights_path"], log_suffix.format(model_name))
         save_dir = join("precomputed_descriptors", *[folder_name for folder_name in log_suffix.split(os.path.sep) if folder_name != "{}"])
     else:
         save_dir = join("precomputed_descriptors", "pretrained")
-    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=args.trained)
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=args.trained or test_finetuned)
     main(configs, data_info, save_dir)

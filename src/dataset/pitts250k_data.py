@@ -64,10 +64,11 @@ def extract_descriptors(image_folder, model, global_extractors):
     for i, img_identifier in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
         pitch, yaw, orig_name = img_identifier.split("+")
         image_high_path = join(image_folder, pitch, yaw, "raw", orig_name)
-        if i % 15 == 0 or i == len(images_to_add) - 1:
+        if i % 100 == 0 or i == len(images_to_add) - 1:
             if i>0:
                 image_=torch.stack(images_list)
-                encodings, global_descr = global_extractors(model, image_)
+                with torch.no_grad():
+                    encodings, global_descr = global_extractors(model, image_)
                 for name, descriptor in zip(images_name, global_descr.cpu()):
                     grp.create_dataset(name, data=descriptor)
                 del image_, global_descr
@@ -105,7 +106,7 @@ def find_neighbors(image_folder, gt, global_descriptor_dim, model, posDistThr, n
         descriptors[i,:]=v.__array__()
     hfile.close()
 
-    knn = NearestNeighbors(n_jobs=1)
+    knn = NearestNeighbors(n_jobs=-1)
     knn.fit(gt)
     nontrivial_positives = list(knn.radius_neighbors(gt,
             radius=nonTrivPosDistSqThr, 

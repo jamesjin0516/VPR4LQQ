@@ -73,6 +73,10 @@ class VPR():
         self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"])
         self.teacher_models.set_float32()
         self.student_models.set_float32()
+        
+        self.optimizers = {model: optim.Adam(self.student_models.model_parameters(model), lr=self.lr, weight_decay=self.lr_decay, foreach=True)
+                           for model in self.student_models.models}
+        self.schedulers = {model: ExponentialLR(optimizer, gamma=self.gamma) for model, optimizer in self.optimizers.items()}
 
         self.start_epochs = {model: self.student_models.last_epoch(model) + 1 if train_conf["resume"] else 0 for model in self.student_models.models}
         self.best_scores = {model: self.student_models.best_score(model) if train_conf["resume"] else 0 for model in self.student_models.models}
@@ -83,12 +87,10 @@ class VPR():
         self.database = self.load_database(data_info["database"])
         self.query_data_sets = load_pitts250k_data(data_info["query"], train_conf, self.student_models.models)
         self.query_data_set = ConcatDataset(self.query_data_sets)
-        for model in self.best_scores:    # TODO: temporary fix to correct best scores from recall scores to recall rates
-            if self.best_scores[model] > 1: self.best_scores[model] /= len(self.query_data_set)
         self.train_data_sets, self.train_indicies = [], []
         for cities in [CITIES_300x400, CITIES_480x640]:
             train_data_per_res = ConcatDataset(load_gsv_cities_data(data_info["train"], train_conf, cities, self.student_models.models))
-            # Randomly split the dataset into 6 parts to have more frequent validations
+            # Randomly split the dataset into train_conf["nparts"] parts to have more frequent validations
             data_indices = list(range(len(train_data_per_res)))
             random.shuffle(data_indices)
             part_s, mod = divmod(len(data_indices), train_conf["nparts"])
@@ -128,9 +130,9 @@ class VPR():
 
         return {"images_path": img_paths, "descriptors": descriptors, "locations": locations}
 
-    def train_loop(self, train_data_set, data_indexes, scaler, schedulers, pbar, epoch, batch_size):    # TODO: remove batch size arg and replace with self.batch_size
+    def train_loop(self, train_data_set, data_indexes, scaler, pbar, epoch):
         # All training images are used
-        batch_sampler = BatchSampler([data_indexes], batch_size)
+        batch_sampler = BatchSampler([data_indexes], self.batch_size)
         data_loader = DataLoader(train_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn_gsv, pin_memory=True)
 
         enabled_loss_types = set(loss_type for loss_type, enabled in self.train_conf["loss"].items() if enabled).union(["loss"])
@@ -166,7 +168,7 @@ class VPR():
                 scaler.unscale_(self.optimizers[model])
                 clip_grad_norm_(self.student_models.model_parameters(model), 1, foreach=True)
                 scaler.step(self.optimizers[model])
-                schedulers[model].step()
+                self.schedulers[model].step()
                 scaler.update()
 
             loss_desc = " ".join([f"{model} ep#{self.start_epochs[model] + epoch} loss: {losses['loss']:.4e} (lr: {self.optimizers[model].param_groups[0]['lr']:.4e})"
@@ -184,20 +186,15 @@ class VPR():
 
     def train_student(self, epoch):
         ds_part_ind = epoch % self.train_conf["nparts"]
-        self.optimizers = {model: optim.Adam(self.student_models.model_parameters(model), lr=self.lr, weight_decay=self.lr_decay, foreach=True)
-                           for model in self.student_models.models}
 
-        schedulers = {model: ExponentialLR(optimizer, gamma=self.gamma) for model, optimizer in self.optimizers.items()}
         self.student_models.set_train(True)
-
         scaler = GradScaler()
 
         image_total = sum([len(self.train_indicies[ds_ind][ds_part_ind]) for ds_ind in range(len(self.train_data_sets))])
         progress_bar = tqdm(total=math.ceil(image_total / self.batch_size))
-        total_losses = self.train_loop(self.train_data_sets[0], self.train_indicies[0][ds_part_ind], scaler, schedulers, progress_bar, epoch, self.batch_size)    # TODO: remove batch_size argument
+        total_losses = self.train_loop(self.train_data_sets[0], self.train_indicies[0][ds_part_ind], scaler, progress_bar, epoch)
         for ds_ind in range(1, len(self.train_data_sets)):
-            models_losses = self.train_loop(self.train_data_sets[ds_ind], self.train_indicies[ds_ind][ds_part_ind], scaler, schedulers, progress_bar, epoch,
-                                            (self.batch_size // 3) if "CricaVPR" in self.student_models.models else self.batch_size)    # TODO: remove batch_size argument
+            models_losses = self.train_loop(self.train_data_sets[ds_ind], self.train_indicies[ds_ind][ds_part_ind], scaler, progress_bar, epoch)
             for model, losses in models_losses.items():
                 for loss_name, loss_value in losses.items():
                     total_losses[model][loss_name] += loss_value
@@ -281,6 +278,8 @@ class VPR():
             for model, rate in recall_rate.items():
                 for i, topk in enumerate(self.topk_nodes):
                     self.log_writers[model].add_scalars(f"Recall rate/@{int(topk)}", {version: rate[version][0,i] for version in rate}, self.start_epochs[model] + ind)
+                for version in ["teacher", "student"]:
+                    print(f"{model} {version} recall rates. {' '.join([f'R@{topk}: {score};' for topk, score in zip(self.topk_nodes.tolist(), recall_rate[model][version][0].tolist())])}")
 
             for model in self.student_models.models:
                 new_state = {"epoch": self.start_epochs[model] + ind, "best_score": recall_rate[model]["student"][0, 0]}
@@ -339,6 +338,7 @@ if __name__=="__main__":
     args = parser.parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    # Allows for choosing 1 combination of the 3 available losses through specifying an integer
     if args.loss_num is not None:
         loss_combs = [(True, True, True), (True, True, False), (True, False, True), (True, False, False), (False, True, True), (False, True, False), (False, False, True)]
         for enabled, loss_type in zip(loss_combs[args.loss_num - 1], config["train"]["loss"]):
