@@ -37,6 +37,7 @@ class NetVladFeatureExtractor:
             raise Exception("No GPU found, please run with --nocuda")
 
         self.device = torch.device("cuda" if cuda else "cpu")
+        self.is_parallel = False
 
         print('===> Building model')
 
@@ -82,6 +83,13 @@ class NetVladFeatureExtractor:
             self.checkpoint = torch.load(resume_ckpt, map_location=lambda storage, loc: storage)
             best_metric = self.checkpoint['best_score']
             state_dict=self.checkpoint['state_dict']
+            # Remove module prefix from state dict
+            state_dict_keys = list(state_dict.keys())
+            for state_key in state_dict_keys:
+                if state_key.startswith("module"):
+                    new_key = state_key.removeprefix("module.")
+                    state_dict[new_key] = state_dict[state_key]
+                    del state_dict[state_key]
             state_dict={k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
             self.model.load_state_dict(state_dict, strict=False)
             self.model = self.model.eval().to(self.device)
@@ -92,8 +100,8 @@ class NetVladFeatureExtractor:
             exit()
 
     def __call__(self, images):
-        image_encoding = self.model.encoder(images)
-        vlad_encoding = self.model.pool(image_encoding)
+        image_encoding = self.model.module.encoder(images) if self.is_parallel else self.model.encoder(images)
+        vlad_encoding = self.model.module.pool(image_encoding) if self.is_parallel else self.model.pool(image_encoding)
         return image_encoding, vlad_encoding
     
     def set_train(self, is_train):
@@ -102,11 +110,15 @@ class NetVladFeatureExtractor:
     def torch_compile(self, **compile_args):
         self.model = torch.compile(self.model, **compile_args)
     
+    def set_parallel(self):
+        self.model = torch.nn.DataParallel(self.model)
+        self.is_parallel = True
+    
     def set_float32(self):
         self.model.to(torch.float32)
     
     def save_state(self, save_path, new_state):
-        new_state["state_dict"] = self.model.state_dict()
+        new_statestate_dict = self.model.state_dict()
         torch.save(new_state, save_path)
 
     @property

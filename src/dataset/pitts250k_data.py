@@ -1,5 +1,6 @@
 from os.path import join,exists,basename
 from os import listdir,makedirs
+import multiprocessing
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import cv2
@@ -82,7 +83,7 @@ def extract_descriptors(image_folder, model, global_extractors):
 
 def find_neighbors(image_folder, gt, global_descriptor_dim, model, posDistThr, nonTrivPosDistSqThr, nPosSample, query=False):
     if query:
-        gt_name=join(config['root'],'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_queryID_1000.mat')
+        gt_name=join(config['root'],'logs/pitts250k/pittsburgh_queryID_1000.mat')
         name_id = scipy.io.loadmat(gt_name)['query_id'][0]
         name_id=[int(i)-1 for i in name_id]
     else:
@@ -178,7 +179,42 @@ def find_neighbors(image_folder, gt, global_descriptor_dim, model, posDistThr, n
 
     hfile.close()
 
-def process_data(root, split_info_path):
+def move_folder_images(input_folder, folder, train_img_names, test_img_names, val_database_names, output_folder, compressions, resolutions):
+    images=listdir(join(input_folder,folder))
+    images.remove('tar')
+    for image in tqdm(images,desc=f'process {folder}',total=len(images)):
+        name,pitch,yaw=image.replace('.jpg','').split('_')
+        pathname = join(folder, image)
+        type = None
+        pitch=str((int(pitch.replace('pitch',''))-1)*30).zfill(3)
+        yaw=str((int(yaw.replace('yaw',''))-1)*30).zfill(3)
+        if pathname in train_img_names:
+            type='train'
+        elif pathname in test_img_names:
+            type='valid'
+        elif pathname in val_database_names:
+            type='database'
+        if type is None: continue
+        input_path=join(input_folder,folder,image)
+        output_path=join(output_folder,type,pitch,yaw)
+        # shutil.copy(input_path,join(output_path,'raw',name+'.jpg'))    # TODO: remove comment
+        comps_todo = []
+        for comp_name in compressions:
+            if not exists(join(output_path, comp_name)):
+                makedirs(join(output_path, comp_name))
+            if not exists(join(output_path, comp_name, name + ".jpg")):
+                comps_todo.append(comp_name)
+        if len(comps_todo) > 0:
+            image = Image.open(input_path)
+            for comp_name in comps_todo:
+                image.save(join(output_path, comp_name, name + ".jpg"), "JPEG", quality=compressions[comp_name])
+            image.close()
+        image_=cv2.imread(input_path)
+        for resolution,newsize in resolutions.items():
+            image_new=cv2.resize(image_,newsize)
+            cv2.imwrite(join(output_path,resolution,name+'.jpg'),image_new)
+
+def process_data(root, split_info_path, compressions, resolutions):
     output_folder=join(root,'logs','pitts250k')
     types=['train','valid','database','query']
     pitch_list=['000','030']
@@ -207,29 +243,9 @@ def process_data(root, split_info_path):
     test_img_names = [image[0].item() for image in test_images]
 
     input_folder=join(root,'data','third_party','pitts250k')
-    for folder in database_folders:
-        images=listdir(join(input_folder,folder))
-        images.remove('tar')
-        for image in tqdm(images,desc=f'process {folder}',total=len(images)):
-            name,pitch,yaw=image.replace('.jpg','').split('_')
-            pathname = join(folder, image)
-            type = None
-            pitch=str((int(pitch.replace('pitch',''))-1)*30).zfill(3)
-            yaw=str((int(yaw.replace('yaw',''))-1)*30).zfill(3)
-            if pathname in train_img_names:
-                type='train'
-            elif pathname in test_img_names:
-                type='valid'
-            elif pathname in val_database_names:
-                type='database'
-            if type is None: continue
-            input_path=join(input_folder,folder,image)
-            output_path=join(output_folder,type,pitch,yaw)
-            shutil.copy(input_path,join(output_path,'raw',name+'.jpg'))
-            image_=cv2.imread(input_path)
-            for resolution,newsize in resolutions.items():
-                image_new=cv2.resize(image_,newsize)
-                cv2.imwrite(join(output_path,resolution,name+'.jpg'),image_new)
+    move_images_args = [(input_folder, folder, train_img_names, test_img_names, val_database_names, output_folder, compressions, resolutions) for folder in database_folders]
+    with multiprocessing.Pool() as pool:
+        pool.starmap(move_folder_images, move_images_args)
 
     query_folder=join(root,'data','third_party','pitts250k','queries_real')
     images=listdir(query_folder)
@@ -242,7 +258,17 @@ def process_data(root, split_info_path):
             type='query'
             input_path=join(query_folder,image)
             output_path=join(output_folder,type,pitch,yaw)
-            shutil.copy(input_path,join(output_path,'raw',name+'.jpg'))
+            comps_todo = []
+            for comp_name in compressions:
+                if not exists(join(output_path, comp_name)):
+                    makedirs(join(output_path, comp_name))
+                if not exists(join(output_path, comp_name, name + ".jpg")):
+                    comps_todo.append(comp_name)
+            if len(comps_todo) > 0:
+                image = Image.open(input_path)
+                for comp_name in comps_todo:
+                    image.save(join(output_path, comp_name, name + ".jpg"), "JPEG", quality=compressions[comp_name])
+                image.close()
             image_=cv2.imread(input_path)
             for resolution,newsize in resolutions.items():
                 image_new=cv2.resize(image_,newsize)
@@ -252,20 +278,20 @@ def main(configs):
     root=configs['root']
     global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=False)
 
-    gt_path=join(root,'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_database_10586_utm.mat')
+    gt_path=join(root,'logs/pitts250k/pittsburgh_database_10586_utm.mat')
     database_gt = scipy.io.loadmat(gt_path)['Cdb'].T
     
-    gt_path=join(root,'data/third_party/pitts250k/groundtruth/tar/groundtruth/pittsburgh_query_1000_utm.mat')
+    gt_path=join(root,'logs/pitts250k/pittsburgh_query_1000_utm.mat')
     split_info_path = join(root, "data/third_party/pitts250k/netvlad_v100_datasets/tar/datasets")
     query_gt = scipy.io.loadmat(gt_path)['Cq'].T
     if not exists(join(root,'logs','pitts250k')):
-        process_data(root, split_info_path)
+        process_data(root, split_info_path, config["data"]["compression"]["compressions"], config["data"]["compression"]["resolution"])
 
     posDistThr=configs['train']['triplet_loss']['posDistThr']
     nonTrivPosDistSqThr=configs['train']['triplet_loss']['nonTrivPosDistSqThr']
     nPosSample=configs['train']['triplet_loss']['nPosSample']
 
-    for image_folder in ['train','valid','database','query']:
+    for image_folder in ['query','database','train','valid']:
         print(f'======================Processing {image_folder}')
         if image_folder=='query':
             gt=query_gt

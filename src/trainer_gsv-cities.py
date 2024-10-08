@@ -50,7 +50,7 @@ class VPR():
         self.thresholds = torch.tensor(configs['vpr']['threshold'])
         self.topk_nodes = torch.tensor(configs['vpr']['topk'])
 
-        self.teacher_models = GlobalExtractors(configs["root"], extractors_conf)
+        self.teacher_models = GlobalExtractors(configs["root"], extractors_conf, data_parallel=train_conf["multiGPU"])
 
         logs_root = join(configs["root"], configs["model_IO"]["logs_path"], data_name)
         makedirs(logs_root, exist_ok=True)
@@ -67,10 +67,9 @@ class VPR():
             makedirs(self.weight_paths[model_name], exist_ok=True)
             if train_conf["resume"]:
                 extractors_conf[model_name]["ckpt_path"] = self.weight_paths[model_name]
-        extractors_conf["MixVPR"]["img_size"] = configs["data"]["compression"]["resolution"][train_conf["data"]["resolution"]]
 
         self.log_writers = {model: SummaryWriter(log_dir=log_dir) for model, log_dir in self.log_dirs.items()}
-        self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"])
+        self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"], data_parallel=train_conf["multiGPU"])
         self.teacher_models.set_float32()
         self.student_models.set_float32()
         
@@ -88,7 +87,7 @@ class VPR():
         self.query_data_sets = load_pitts250k_data(data_info["query"], train_conf, self.student_models.models)
         self.query_data_set = ConcatDataset(self.query_data_sets)
         self.train_data_sets, self.train_indicies = [], []
-        for cities in [CITIES_300x400, CITIES_480x640]:
+        for cities in [CITIES_300x400]:
             train_data_per_res = ConcatDataset(load_gsv_cities_data(data_info["train"], train_conf, cities, self.student_models.models))
             # Randomly split the dataset into train_conf["nparts"] parts to have more frequent validations
             data_indices = list(range(len(train_data_per_res)))
@@ -245,18 +244,9 @@ class VPR():
         print("start vpr examining ...")
 
         self.student_models.set_train(False)
-
-        # Choosing a fixed number of images from each query dataset is currently unused
-        # sample_size=1000
-        # len_init=self.query_data_sets[0].__len__()
-        # indices=[random.sample(list(range(len_init)),sample_size)]
-        # for d in self.query_data_sets[1:]:
-        #     len_current=len_init+d.__len__()
-        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-        #     len_init=len_current
         
         # All query images are evaluated for VPR recall
-        query_batch=20
+        query_batch=40
         batch_sampler=BatchSampler([list(range(len(self.query_data_set)))], query_batch)
         data_loader = DataLoader(self.query_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn, pin_memory=True)
         total = math.ceil(len(self.query_data_set) / query_batch)

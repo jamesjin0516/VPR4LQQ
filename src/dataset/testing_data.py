@@ -1,9 +1,10 @@
+import cv2
+import multiprocessing
 import os
 from os.path import join, exists, basename, splitext
 from os import listdir, makedirs, rename
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-import cv2
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
@@ -24,8 +25,8 @@ def input_transform():
     ])
 
 # Function to extract descriptors from images using a global feature extractor
-def extract_descriptors(image_folder, model, save_dir):
-    hfile_path = join(image_folder, save_dir, f"global_descriptor_{model}.h5")
+def extract_descriptors(image_folder, model, batch_size, save_dir, res="raw"):
+    hfile_path = join(image_folder, save_dir, f"global_descriptor_{model}.h5" if res == "raw" else f"global_descriptor_{model}_{res}.h5")
     hfile, grp_name = h5py.File(hfile_path, "a"), basename(image_folder)
     # Retrieve already processed images, if any
     if grp_name in hfile:
@@ -36,8 +37,8 @@ def extract_descriptors(image_folder, model, save_dir):
         grp = hfile.create_group(basename(image_folder))
 
     # Ignore already processed images
-    images_high_path = join(image_folder, "raw")
-    image_high_names = set(listdir(images_high_path))
+    images_path = join(image_folder, res)
+    image_high_names = set(listdir(images_path))
     images_to_add = image_high_names.difference(existing_imgs)
 
     if len(images_to_add) == 0:
@@ -45,11 +46,11 @@ def extract_descriptors(image_folder, model, save_dir):
         hfile.close()
         return
     for i, im in tqdm(enumerate(images_to_add), desc=f"{basename(image_folder)} {basename(hfile_path)}", total=len(images_to_add)):
-        image = Image.open(join(images_high_path, im))
+        image = Image.open(join(images_path, im))
         if image.mode != "RGB": image = image.convert("RGB")
         image = input_transform()(image)
-        # If 80 images read, no more images to read, or image resolution changed, compute descriptors
-        if i % 80 == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
+        # If batch_size images read, no more images to read, or image resolution changed, compute descriptors
+        if i % batch_size == 0 or i == len(images_to_add) - 1 or (len(images_list) > 0 and images_list[-1].shape != image.shape):
             if i > 0:
                 batched_imgs = torch.stack(images_list)
                 with torch.no_grad():
@@ -65,9 +66,10 @@ def extract_descriptors(image_folder, model, save_dir):
     hfile.close()
 
 # Function to find neighbors for each image based on their global descriptors
-def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample, save_dir):
-    hfile_neighbor_path = join(image_folder, save_dir, f"neighbors_{model}.h5")
-    hfile_path = join(image_folder, save_dir, f"global_descriptor_{model}.h5")
+def find_neighbors(name_id, image_folder, res, model, gt, global_descriptor_dim, posDistThr, nonTrivPosDistSqThr, nPosSample, save_dir):
+    file_suffix = f"{model}.h5" if res == "raw" else f"{model}_{res}.h5"
+    hfile_neighbor_path = join(image_folder, save_dir, f"neighbors_{file_suffix}")
+    hfile_path = join(image_folder, save_dir, f"global_descriptor_{file_suffix}")
     hfile = h5py.File(hfile_path, "r")
     
     names = []
@@ -147,8 +149,31 @@ def find_neighbors(name_id, image_folder, model, gt, global_descriptor_dim, posD
 
     hfile.close()
 
-# Function to process data, organizing it into the required structure for training and evaluation
-def process_data(database_path, query_path, resolutions, img_ext):
+
+def compress_image(args):
+    image_name, raw_folder, compressions, resolutions, split_path, img_ext = args
+    raw_image_path = join(raw_folder, image_name)
+    comps_todo, res_todo = [], []
+    for comp_name in compressions:
+        if not exists(join(split_path, comp_name, image_name)):
+            comps_todo.append(comp_name)
+    if len(comps_todo) > 0:
+        image = Image.open(raw_image_path)
+        for comp_name in comps_todo:
+            image.save(join(split_path, comp_name, image_name), "JPEG", quality=compressions[comp_name])
+        image.close()
+    for res_name in resolutions:
+        if not exists(join(split_path, res_name, image_name)):
+            res_todo.append(res_name)
+    if len(res_todo) > 0:
+        image = cv2.imread(raw_image_path)
+        for res_name in res_todo:
+            image_new = cv2.resize(image, resolutions[res_name])
+            cv2.imwrite(join(split_path, res_name, image_name + f".{img_ext}"), image_new)
+
+
+# Function to process data, organizing it into the required structure for training and evaluatiosn
+def process_data(database_path, query_path, compressions, resolutions, img_ext):
     split_types = {"database": database_path, "query": query_path}
     for split_type, split_path in split_types.items():
         # Move any unclassifed images under database or query to the "raw" resolution folder
@@ -158,23 +183,22 @@ def process_data(database_path, query_path, resolutions, img_ext):
             makedirs(raw_folder)
         for image in images:
             rename(join(split_path, image), join(raw_folder, image))
-        if split_type == "database": continue
         # Ensure all other resolutions have a cooresponding folder
         for res_name in list(resolutions.keys()):
             image_folder = join(split_path, res_name)
             if not exists(image_folder):
                 makedirs(image_folder)
+        for comp_name in compressions:
+            image_folder = join(split_path, comp_name)
+            if not exists(image_folder):
+                makedirs(image_folder)
 
+        raw_images = listdir(raw_folder)
         # Resize and copy all images moved to raw folder into corresponding resolution folders
-        for image in tqdm(images, desc=f'Processing {split_type} images'):
-            raw_image_path = join(raw_folder, image)
-            image_ = cv2.imread(raw_image_path)
-            for resolution, newsize in resolutions.items():
-                if isinstance(newsize, int):
-                    newsize = (newsize, int(image_.shape[1] * newsize / image_.shape[0]))
-                resized_image = cv2.resize(image_, tuple(reversed(newsize)))    # cv2.resize expects (width, height)
-                output_image_path = join(split_path, resolution, image)
-                cv2.imwrite(output_image_path, resized_image)
+        comp_args = [(image_name, raw_folder, compressions, resolutions, split_path, img_ext) for image_name in raw_images]
+        with multiprocessing.Pool() as pool:
+            for _ in tqdm(pool.imap_unordered(compress_image, comp_args, chunksize=10), desc=f'Processing {split_type} images', total=len(comp_args)):
+                pass
 
 
 def process_image_filenames(folder_path, img_ext):
@@ -221,7 +245,7 @@ def main(configs, data_info, save_dir):
     
     # Divide images into resolutions for each of database and query folders
     database_input_path, query_input_path = join(testset_path, test_info["database"]), join(testset_path, test_info["query"])
-    process_data(database_input_path, query_input_path, configs["test_data"]["resolution"], img_ext)
+    process_data(database_input_path, query_input_path, configs["test_data"]["compressions"], configs["test_data"]["resolution"], img_ext)
 
     # Parse coordinates from all images directly under the database and query folders of the dataset
     gt_info = {"database": dict(zip(["gt", "filenames"], process_image_filenames(join(database_input_path, "raw"), img_ext))),
@@ -234,19 +258,11 @@ def main(configs, data_info, save_dir):
     # Generate permutations of image types and vpr methods
     arguments = []
     for image_type in gt_info:
-        arguments.extend((image_type, model) for model in global_extractors.models)
+        arguments.extend((join(testset_path, test_info[image_type]), model) for model in global_extractors.models)
         makedirs(join(testset_path, test_info[image_type], save_dir), exist_ok=True)
-    # Expand permutations into global descriptor extraction parameters
-    descriptor_args = [(join(testset_path, test_info[image_folder]), model) for image_folder, model in arguments]
-    print(f"Extracting global descriptors of {testset} for each of {global_extractors.models}")
-    for arg in descriptor_args:
-        extract_descriptors(*arg, save_dir)
-    # Similarly assemble find neighbor parameters
-    neighbor_args = [(gt_info[image_folder]["filenames"], join(testset_path, test_info[image_folder]), model, gt_info[image_folder]["gt"],
-                      global_extractors.feature_length(model), posDistThr, nonTrivPosDistSqThr, nPosSample) for image_folder, model in arguments]
-    print(f"Gathering neighbors of {testset} for each of {global_extractors.models}")
-    for arg in neighbor_args:
-        find_neighbors(*arg, save_dir)
+    print(f"{testset} ({configs['test_data']['test_res']}) feature extraction for {save_dir} {global_extractors.models}")
+    for arg in arguments:
+        extract_descriptors(*arg, configs["eval_batch"], save_dir, configs["test_data"]["test_res"])
 
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
@@ -256,7 +272,6 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     parser.add_argument("--test_set", type=str, help="Name of dataset to use")
-    parser.add_argument("--trained", action="store_true", help="Whether to use trained models")
     parser.add_argument("-l", "--loss-num", type=int, help="The loss combination to use (index [1-7] for the permutations of the 3 losses)")
     args = parser.parse_args()
     with open(args.config, "r") as f:
@@ -280,11 +295,13 @@ if __name__ == '__main__':
         log_suffix = join(train_conf["data"]["name"] + ("_distill" if train_conf["loss"]["distill"] else "") + ("_vlad" if train_conf["loss"]["vlad"] else "") \
                             + ("_triplet" if train_conf["loss"]["triplet"] else ""), "{}",
                             str(train_conf["data"]["resolution"]) + "_" + str(train_conf["data"]["qp"]) + "_" + str(train_conf["lr"]))
-    if args.trained or test_finetuned:
+    if configs["test_data"]["use_trained_descs"] or test_finetuned:
         for model_name, model_conf in configs["vpr"]["global_extractor"].items():
             model_conf["ckpt_path"] = join(configs["root"], configs["model_IO"]["weights_path"], log_suffix.format(model_name))
         save_dir = join("precomputed_descriptors", *[folder_name for folder_name in log_suffix.split(os.path.sep) if folder_name != "{}"])
     else:
         save_dir = join("precomputed_descriptors", "pretrained")
-    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=args.trained or test_finetuned)
+    global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=configs["test_data"]["use_trained_descs"] or test_finetuned,
+                                         data_parallel=configs["train_conf"]["multiGPU"])
+    
     main(configs, data_info, save_dir)

@@ -126,7 +126,7 @@ class Pitts250k_dataset(Dataset):
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
         neighbor_files = {model: h5py.File(join(image_folder, f"neighbors_{model}.h5"), "r") for model in models}
-        self.__prepare_data(image_folder, neighbor_files, img_names)
+        self.__prepare_data(image_folder, models, img_names)
         for file in neighbor_files.values(): file.close()
         
     def __getitem__(self, index):
@@ -155,7 +155,7 @@ class Pitts250k_dataset(Dataset):
     def __len__(self):
         return len(self.data)
     
-    def __prepare_data(self, image_folder, neighbor_files, img_names):
+    def __prepare_data(self, image_folder, models, img_names):
         self.data, discarded_imgs = [], []
         dir_contents, pitch_list = listdir(image_folder), []
         for dir_entry in dir_contents:
@@ -163,62 +163,71 @@ class Pitts250k_dataset(Dataset):
                 pitch_list.append(dir_entry)
         for pitch in sorted(pitch_list):
             pitch_folder=join(image_folder,pitch)
-            yaw_list=listdir(pitch_folder)
-            for yaw in sorted(yaw_list):
-                images_root=join(pitch_folder,yaw)
-                images_low_path=join(images_root,self.resolution) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/180p'
-                images_high_path=join(images_root,'raw') # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw'
-
-                images_low=listdir(images_low_path)
-                for image in images_low:
-                    if img_names is not None:
-                        orig_name = "_".join([image.rstrip(".jpg"), f"pitch{int(int(pitch) / 30 + 1)}", f"yaw{int(int(yaw) / 30 + 1)}"]) + ".jpg"
-                        if orig_name not in img_names:
-                            continue
-                    name, image_data = f"{pitch}+{yaw}+{image}", {}
-                    for model, neighbor_file in neighbor_files.items():
-                        image_high_path=join(images_high_path,image) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
-                        image_low_path=join(images_low_path,image)
-                        positives_high,negtives_high=[],[]
-                        positives_low,negtives_low=[],[]
-                        ind=0
-                        # key: how to get the neighbor thing in the new dataset
-                        positives_pool = neighbor_file[name]['positives'][:] #(20,)
-                        negtives_pool = neighbor_file[name]['negtives'][:] #(100,)
-                        while len(positives_high)<self.nPosSample:
-                            pitch_,yaw_,name_=positives_pool[ind].decode('utf-8').split('+')
-                            positive_high=join(image_folder,pitch_,yaw_,self.high_resolution,name_)
-                            positive_low=join(image_folder,pitch_,yaw_,self.resolution,name_)
-                            if exists(positive_high) and exists(positive_low):
-                                positives_high.append(positive_high)
-                                positives_low.append(positive_low)
-                            ind+=1
-                            if ind==len(positives_pool)-1:
-                                break
-                        ind=0
-                        while len(negtives_high)<self.nNegSample:
-                            pitch_,yaw_,name_=negtives_pool[ind].decode('utf-8').split('+')
-                            negtive_high=join(image_folder,pitch_,yaw_,self.high_resolution,name_)
-                            negtive_low=join(image_folder,pitch_,yaw_,self.resolution,name_)
-                            if exists(negtive_high) and exists(negtive_low):
-                                negtives_high.append(negtive_high)
-                                negtives_low.append(negtive_low)
-                            ind+=1
-                            if ind==len(negtives_pool)-1:
-                                break
-                        if len(positives_high)==self.nPosSample and len(negtives_high)==self.nNegSample:
-                            image_data[model] = [[image_high_path, positives_high, negtives_high], [image_low_path, positives_low, negtives_low]]
-                        # image_high_path: '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
-                        # positives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006419.jpg']
-                        # negtives_high: ['/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/210/raw/006352.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/240/raw/003258.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/030/300/raw/008770.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/180/raw/006603.jpg', '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/060/raw/008609.jpg']
-                        # same pattern for low
-                    if len(image_data) == len(neighbor_files):
-                        self.data.append(image_data)
-                    else:
-                        discarded_imgs.append(name)
+            read_yaw_args = [(pitch, yaw, pitch_folder, models, image_folder, self.resolution, self.high_resolution,
+                              self.nPosSample, self.nNegSample, img_names) for yaw in listdir(pitch_folder)]
+            with multiprocessing.Pool() as pool:
+                yaw_results = pool.starmap(Pitts250k_dataset.read_yaw_directory, read_yaw_args)
+            for yaw_data, yaw_discard in yaw_results:
+                self.data.extend(yaw_data)
+                discarded_imgs.extend(yaw_discard)
         if len(discarded_imgs) > 0:
             print(f"Pitts250k dataset ({basename(image_folder)}) discarded {len(discarded_imgs)} for insufficient"
                   f"neighbors from at least one extractor.\n{discarded_imgs}")
+    
+    @staticmethod
+    def read_yaw_directory(pitch, yaw, pitch_folder, models, image_folder, resolution, high_resolution, nPosSample, nNegSample, img_names):
+        neighbor_files = {model: h5py.File(join(image_folder, f"neighbors_{model}.h5"), "r") for model in models}
+        data, discarded_imgs = [], []
+        images_root=join(pitch_folder, yaw)
+        images_low_path=join(images_root, resolution) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/180p'
+        images_high_path=join(images_root,'raw') # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw'
+
+        images_low=listdir(images_low_path)
+        for image in images_low:
+            if img_names is not None:
+                orig_name = "_".join([image.rstrip(".jpg"), f"pitch{int(int(pitch) / 30 + 1)}", f"yaw{int(int(yaw) / 30 + 1)}"]) + ".jpg"
+                if orig_name not in img_names:
+                    continue
+            name, image_data = f"{pitch}+{yaw}+{image}", {}
+            for model, neighbor_file in neighbor_files.items():
+                image_high_path=join(images_high_path,image) # '/scratch/lg3490/VPR4LQQ/logs/pitts250k/query/000/000/raw/006420.jpg'
+                image_low_path=join(images_low_path,image)
+                positives_high,negtives_high=[],[]
+                positives_low,negtives_low=[],[]
+                ind=0
+                # key: how to get the neighbor thing in the new dataset
+                positives_pool = neighbor_file[name]['positives'][:] #(20,)
+                negtives_pool = neighbor_file[name]['negtives'][:] #(100,)
+                while len(positives_high) < nPosSample:
+                    pitch_,yaw_,name_=positives_pool[ind].decode('utf-8').split('+')
+                    positive_high=join(image_folder, pitch_, yaw_, high_resolution, name_)
+                    positive_low=join(image_folder, pitch_, yaw_ , resolution, name_)
+                    if exists(positive_high) and exists(positive_low):
+                        positives_high.append(positive_high)
+                        positives_low.append(positive_low)
+                    ind+=1
+                    if ind==len(positives_pool)-1:
+                        break
+                ind=0
+                while len(negtives_high)<nNegSample:
+                    pitch_,yaw_,name_=negtives_pool[ind].decode('utf-8').split('+')
+                    negtive_high=join(image_folder,pitch_,yaw_,high_resolution,name_)
+                    negtive_low=join(image_folder,pitch_,yaw_,resolution,name_)
+                    if exists(negtive_high) and exists(negtive_low):
+                        negtives_high.append(negtive_high)
+                        negtives_low.append(negtive_low)
+                    ind+=1
+                    if ind==len(negtives_pool)-1:
+                        break
+                if len(positives_high)==nPosSample and len(negtives_high)==nNegSample:
+                    image_data[model] = [[image_high_path, positives_high, negtives_high], [image_low_path, positives_low, negtives_low]]
+                # same pattern for low
+            if len(image_data) == len(neighbor_files):
+                data.append(image_data)
+            else:
+                discarded_imgs.append(name)
+        for file in neighbor_files.values(): file.close()
+        return data, discarded_imgs
 
 
 def collate_fn_gsv(batch):
@@ -234,7 +243,7 @@ class GSVCitiesDataset(Dataset):
         self.images_path = images_path
         self.resolution = resolution
         self.models = models
-        self.imgs_per_place = 2 if "AnyLoc" in models else 4    # TODO: make this configurable per model
+        self.imgs_per_place = 4
         self.nPosSample, self.nNegSample = config["nPosSample"], config["nNegSample"]
         self.input_transform = transforms.Compose([transforms.ToTensor(),
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])

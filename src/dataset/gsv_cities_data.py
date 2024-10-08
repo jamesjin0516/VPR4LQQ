@@ -127,7 +127,7 @@ def extract_descriptors(image_path, city, model, global_extractors):
     hfile.close()
 
 
-def neighbor_mathcer(batch_idx, batch_size, descriptors, names, indices_to_add, nontrivial_positives, potential_negatives, nPosSample):
+def neighbor_matcher(batch_idx, batch_size, descriptors, names, indices_to_add, nontrivial_positives, potential_negatives, nPosSample):
     start_idx = batch_idx * batch_size
     end_idx = min((batch_idx + 1) * batch_size, len(names))
     if len(indices_to_add.intersection(range(start_idx, end_idx))) == 0: return None
@@ -213,10 +213,8 @@ def find_neighbors(images_path, city, model, all_coords, global_descriptor_dim, 
     num_batches = int(np.ceil(len(names)/batch_size))
     matcher_args = [(batch_idx, batch_size, descriptors, names, indices_to_add, nontrivial_positives, potential_negatives, nPosSample)
                     for batch_idx in range(num_batches)]
-    # with multiprocessing.Pool(1 if city == "London" else 2) as pool:    # TODO: remove hardcoded London
-    #     for matched_info in tqdm(pool.imap_unordered(neighbor_mathcer, matcher_args, chunksize=10), total=num_batches):
     for arg in tqdm(matcher_args, desc=f"{city} {basename(hfile_neighbor_path)}"):
-        matched_info = neighbor_mathcer(*arg)
+        matched_info = neighbor_matcher(*arg)
         if matched_info is not None:
             for img_neighbor_info in matched_info:
                 grp = hfile.create_group(img_neighbor_info[0])
@@ -225,32 +223,34 @@ def find_neighbors(images_path, city, model, all_coords, global_descriptor_dim, 
     hfile.close()
 
 
-def resize_images(images_path, cities, resolutions):
-    for city in cities:
-        city_path = join(images_path, city)
-        # Move any unclassifed images under database or query to the "raw" resolution folder
-        images = [image for image in listdir(city_path) if splitext(image)[1] == ".jpg"]
-        raw_folder = join(city_path, "raw")
-        if not exists(raw_folder):
-            mkdir(raw_folder)
-        for image in images:
-            rename(join(city_path, image), join(raw_folder, image))
-        # Ensure all other resolutions have a cooresponding folder
-        for res_name in resolutions:
-            image_folder = join(city_path, res_name)
-            if not exists(image_folder):
-                mkdir(image_folder)
-        
-        # Resize and copy all images moved to raw folder into corresponding resolution folders
-        for img_name in tqdm(images, desc=f"Resizing {city} images"):
-            raw_image_path = join(raw_folder, img_name)
-            image = cv2.imread(raw_image_path)
-            for resolution, newsize in resolutions.items():
-                if isinstance(newsize, int):
-                    newsize = (newsize, int(image.shape[1] * newsize / image.shape[0]))
-                resized_image = cv2.resize(image, tuple(reversed(newsize)))    # cv2.resize expects (width, height)
-                output_image_path = join(city_path, resolution, img_name)
-                cv2.imwrite(output_image_path, resized_image)
+def resize_images(images_path, city, compressions):
+    city_path = join(images_path, city)
+    # Move any unclassifed images under database or query to the "raw" resolution folder
+    images = [image for image in listdir(city_path) if splitext(image)[1] == ".jpg"]
+    raw_folder = join(city_path, "raw")
+    if not exists(raw_folder):
+        mkdir(raw_folder)
+    for image in images:
+        rename(join(city_path, image), join(raw_folder, image))
+    # Ensure all other resolutions have a cooresponding folder
+    for comp_name in compressions:
+        image_folder = join(city_path, comp_name)
+        if not exists(image_folder):
+            mkdir(image_folder)
+    
+    raw_images = listdir(raw_folder)
+    # Resize and copy all images moved to raw folder into corresponding resolution folders
+    for image_name in tqdm(raw_images, desc=f'Processing {city} images'):
+        raw_image_path = join(raw_folder, image_name)
+        comps_todo = []
+        for comp_name in compressions:
+            if not exists(join(city_path, comp_name, image_name)):
+                comps_todo.append(comp_name)
+        if len(comps_todo) > 0:
+            image = Image.open(raw_image_path)
+            for comp_name in comps_todo:
+                image.save(join(city_path, comp_name, image_name), "JPEG", quality=compressions[comp_name])
+            image.close()
 
 
 def read_gt(images_path):
@@ -279,7 +279,9 @@ def main(config):
     if not exists(dataset_dest):
         shutil.copytree(dataset_source, dataset_dest)
     images_path = join(dataset_dest, "Images")
-    resize_images(images_path, TRAIN_CITIES, config["data"]["compression"]["resolution"])
+    resize_args = [(images_path, city, config["data"]["compression"]["compressions"]) for city in CITIES_300x400]
+    with multiprocessing.Pool() as pool:
+        pool.starmap(resize_images, resize_args)
     longlat_coords, image_names = read_gt(images_path)
     groundtruth = dict(zip(image_names, longlat_coords))
 

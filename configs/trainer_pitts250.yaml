@@ -25,6 +25,8 @@ data:
       240p: [240,320]
       360p: [360,480]
       480p: [480,640]
+    compressions:
+      90%: 10    # value given to quality parameter in pillow.Image.save
 
 train:
   video:
@@ -35,13 +37,13 @@ train:
   num_worker: 4
   num_cluster: 64
   cacheRefreshRate: 1000
-  nGPU: 2
+  multiGPU: true
   resume: false
   lr: 0.000001
   lr_decay: 0.000000000002
   exponential_gamma: 0.99999
   data:
-    resolution: 180p
+    resolution: 90%
     qp: -1
   cluster:
     descriptor_num: 500000

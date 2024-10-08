@@ -59,7 +59,7 @@ class VPR():
         self.thresholds = torch.tensor(configs['vpr']['threshold'])
         self.topk_nodes=torch.tensor(configs['vpr']['topk'])
 
-        self.teacher_models = GlobalExtractors(configs["root"], extractors_conf)
+        self.teacher_models = GlobalExtractors(configs["root"], extractors_conf, data_parallel=train_conf["multiGPU"])
 
         logs_root = join(configs["root"], configs["model_IO"]["logs_path"], data_name)
         makedirs(logs_root, exist_ok=True)
@@ -76,12 +76,9 @@ class VPR():
             makedirs(self.weight_paths[model_name], exist_ok=True)
             if train_conf["resume"]:
                 extractors_conf[model_name]["ckpt_path"] = self.weight_paths[model_name]
-        extractors_conf["MixVPR"]["img_size"] = configs["data"]["compression"]["resolution"][train_conf["data"]["resolution"]]
 
         self.log_writers = {model: SummaryWriter(log_dir=log_dir) for model, log_dir in self.log_dirs.items()}
-        self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"])
-        self.teacher_models.torch_compile(float32=True, fullgraph=True, dynamic=False, mode="max-autotune", backend="inductor")
-        self.student_models.torch_compile(float32=True, fullgraph=True, dynamic=False, mode="max-autotune", backend="inductor")
+        self.student_models = GlobalExtractors(configs["root"], extractors_conf, pipeline=train_conf["resume"], data_parallel=train_conf["multiGPU"])
 
         self.start_epochs = {model: self.student_models.last_epoch(model) + 1 if train_conf["resume"] else 0 for model in self.student_models.models}
         self.best_scores = {model: self.student_models.best_score(model) if train_conf["resume"] else 0 for model in self.student_models.models}
@@ -141,21 +138,6 @@ class VPR():
 
         schedulers = {model: ExponentialLR(optimizer, gamma=self.gamma) for model, optimizer in self.optimizers.items()}
         self.student_models.set_train(True)
-        
-        # sample_size=40000//len(self.train_data_sets)
-        # len_init=self.train_data_sets[0].__len__()
-        # indices=[random.sample(list(range(len_init)),sample_size)]
-        # for d in self.train_data_sets[1:]:
-        #     len_current=len_init+d.__len__()
-        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-        #     len_init=len_current
-
-        # len_init=self.train_data_sets[0].__len__()
-        # indices=[list(range(len_init))]
-        # for d in self.train_data_sets[1:]:
-        #     len_current=len_init+d.__len__()
-        #     indices.append(list(range(len_init,len_current)))
-        #     len_init=len_current
 
         # All training images are used
         batch_sampler = BatchSampler([list(range(len(self.train_data_set)))], self.batch_size)
@@ -261,15 +243,6 @@ class VPR():
         self.student_models.set_train(False)
 
         random.seed(10)
-
-        # Choosing a fixed number of images from each query dataset is currently unused
-        # sample_size=1000
-        # len_init=self.query_data_sets[0].__len__()
-        # indices=[random.sample(list(range(len_init)),sample_size)]
-        # for d in self.query_data_sets[1:]:
-        #     len_current=len_init+d.__len__()
-        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-        #     len_init=len_current
         
         # All query images are evaluated for VPR recall
         query_batch=20
@@ -295,6 +268,8 @@ class VPR():
             for model, rate in recall_rate.items():
                 for i, topk in enumerate(self.topk_nodes):
                     self.log_writers[model].add_scalars(f"Recall rate/@{int(topk)}", {version: rate[version][0,i] for version in rate}, self.start_epochs[model] + ind)
+                for version in ["teacher", "student"]:
+                    print(f"{model} {version} recall rates ({', '.join([f'R@{k}' for k in self.topk_nodes.tolist()])}): {', '.join([str(score) for score in recall_rate[model][version][0].tolist()])}")
 
             for model in self.student_models.models:
                 new_state = {"epoch": self.start_epochs[model] + ind, "best_score": recall_score[model]["student"][0, 0]}
@@ -307,13 +282,6 @@ class VPR():
             del recall_score, recall_rate
 
         print('start loss validation ...')
-        # sample_size=15
-        # len_init=self.valid_data_sets[0].__len__()
-        # indices=[random.sample(list(range(len_init)),sample_size)]
-        # for d in self.valid_data_sets[1:]:
-        #     len_current=len_init+d.__len__()
-        #     indices.append(random.sample(list(range(len_init,len_current)),sample_size))
-        #     len_init=len_current
         # All validation images are used
         batch_sampler = BatchSampler([list(range(len(self.valid_data_set)))], self.batch_size)
         data_loader = DataLoader(self.valid_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn, pin_memory=True)
@@ -354,53 +322,6 @@ class VPR():
             for loss_type, loss_value in losses.items():
                 self.log_writers[model].add_scalar(f"Valid/{'Loss' if loss_type == 'loss' else f'Loss_{loss_type}'}",
                                                    loss_value / len(self.valid_data_set), self.start_epochs[model] + ind)
-      
-    def get_cluster(self):
-        cluster_config=self.train_conf["cluster"]
-        descriptor_num=cluster_config['descriptor_num']
-        descriptor_per_image=cluster_config['descriptor_per_image']
-        image_num=ceil(descriptor_num/descriptor_per_image)
-        image_nums=split_integer(image_num,len(self.train_data_sets))
-
-        len_init=self.train_data_sets[0].__len__()
-        indices=[random.sample(list(range(len_init)),image_nums[0])]
-        for d,num in zip(self.train_data_sets[1:],image_nums[1:]):
-            len_current=len_init+d.__len__()
-            indices.append(random.sample(list(range(len_init,len_current)),num))
-            len_init=len_current
-        batch_sampler=BatchSampler(indices,self.batch_size)
-        data_loader = DataLoader(self.train_data_set, batch_sampler=batch_sampler, num_workers=self.train_conf["num_worker"], collate_fn=collate_fn, pin_memory=True)
-
-        print('====> Extracting clusters')
-        
-        with h5py.File(self.initcache, mode='w') as h5:
-            with torch.no_grad():
-                self.teacher_model.model.eval()
-                print('====> Extracting Descriptors')
-                dbFeat = h5.create_dataset("descriptors", 
-                        [descriptor_num, cluster_config['dimension']], 
-                        dtype=np.float32)
-                for iteration, [_,images_low,_,_] in enumerate(data_loader, 1):
-                    images_low=images_low[:,0,:,:,:].float().to(self.device)
-                    image_low_descriptors= self.teacher_model.model.encoder(images_low).view(images_low.size(0), cluster_config['dimension'], -1).permute(0, 2, 1)
-                    batchix = (iteration-1) * self.train_conf["batch_size"] * descriptor_per_image
-                    for ix in range(image_low_descriptors.size(0)):
-                        # sample different location for each image in batch
-                        sample = np.random.choice(image_low_descriptors.size(1), descriptor_per_image, replace=False)
-                        startix = batchix + ix*descriptor_per_image
-                        dbFeat[startix:startix+descriptor_per_image, :] = image_low_descriptors[ix, sample, :].detach().cpu().numpy()
-
-                    print("==> Batch ({}/{})".format(iteration, 
-                        ceil(image_num/self.batch_size)), flush=True)
-                    del image_low_descriptors, images_low
-            print('====> Clustering..')
-            niter = 100
-            kmeans = faiss.Kmeans(cluster_config["dimension"], self.train_conf["num_cluster"], niter=niter, verbose=False)
-            kmeans.train(dbFeat[...])
-
-            print('====> Storing centroids', kmeans.centroids.shape)
-            h5.create_dataset('centroids', data=kmeans.centroids)
-            print('====> Done!')
     
     def _compute_image_descriptors(self, input_images, global_extractors, models, calc_pos_neg=False):
         # Remove batch dimension from images
@@ -452,8 +373,6 @@ def main(configs):
     data['query']={'image_folder':join(root,'logs',name,query_folder),'utm':query_gt,'id':query_id}
 
     vpr=VPR(configs,data,name)
-    if not exists(vpr.initcache):
-        vpr.get_cluster()
 
     for epoch in range(0, configs["train"]["nepoch"]):
         vpr.train_student(epoch)
@@ -463,7 +382,13 @@ def main(configs):
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default="../configs/trainer_pitts250.yaml")
+    parser.add_argument("-l", "--loss-num", type=int, help="The loss combination to use (index [1-7] for the permutations of the 3 losses)")
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+    # Allows for choosing 1 combination of the 3 available losses through specifying an integer
+    if args.loss_num is not None:
+        loss_combs = [(True, True, True), (True, True, False), (True, False, True), (True, False, False), (False, True, True), (False, True, False), (False, False, True)]
+        for enabled, loss_type in zip(loss_combs[args.loss_num - 1], config["train"]["loss"]):
+            config["train"]["loss"][loss_type] = enabled
     main(config)

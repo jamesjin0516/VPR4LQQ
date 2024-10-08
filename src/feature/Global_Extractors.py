@@ -11,7 +11,7 @@ class GlobalExtractors:
     model_classes = {"MixVPR": MixVPRFeatureExtractor, "AnyLoc": VLADDinoV2FeatureExtractor, "DinoV2Salad": DINOV2SaladFeatureExtractor,
                      "CricaVPR": CricaVPRFeatureExtractor}
 
-    def __init__(self, root, g_extr_conf, pipeline=False):
+    def __init__(self, root, g_extr_conf, pipeline=False, data_parallel=False):
         """
         Creates a container for a list of vpr methods for inference.
         - root: prefix path for model parameters (same as in test_trained_model.py)
@@ -26,8 +26,10 @@ class GlobalExtractors:
                     arch=model_configs['arch'], num_clusters=model_configs['num_clusters'], pooling=model_configs['pooling'],
                     vladv2=model_configs['vladv2'], nocuda=model_configs['nocuda'])
                 self.models_objs["NetVlad"] = netvlad_model
+                if data_parallel: self.models_objs["NetVlad"].set_parallel()
             elif model_name in GlobalExtractors.model_classes:
                 self.models_objs[model_name] = GlobalExtractors.model_classes[model_name](root, model_configs, pipeline)
+                if data_parallel: self.models_objs[model_name].set_parallel()
             else:
                 print(f"GlobalExtractors doesn't have {model_name}'s implementation, skipped.")
 

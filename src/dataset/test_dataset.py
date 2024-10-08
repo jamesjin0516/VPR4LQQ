@@ -32,18 +32,19 @@ def collate_fn(batch):
     images_high = [batch_item[0] for batch_item in batch]
     images_low = [batch_item[1] for batch_item in batch]
     locations = torch.stack([batch_item[2] for batch_item in batch])
-    if all(isinstance(image_high, torch.Tensor) for image_high in images_high):
+    if all(isinstance(image_high, torch.Tensor) for image_high in images_high) and \
+        len(set(tuple(image_high.shape) for image_high in images_high)) == 1:    # if all tensors have the same shape
         images_high, images_low = torch.stack(images_high), torch.stack(images_low)
     return images_high, images_low, locations
 
 
 class TestDataset(Dataset):
 
-    def __init__(self, image_folder, neighbors_suffix, resolution, train_loss_config):
+    def __init__(self, image_folder, resolution, train_loss_config, neighbors_suffix=None):
         """
         - image_folder: path to query images folder (one level above individual resolutions folder)
-        - neighbors_suffix: path of neighbors file relative to image_folder
         - resolution: specifies the resolution folder to choose for query images
+        - neighbors_suffix: path of neighbors file relative to image_folder
         """
         self.input_transform = transforms.Compose([
             transforms.ToTensor(),
@@ -53,8 +54,7 @@ class TestDataset(Dataset):
         self.image_folder = image_folder
         self.resolution = resolution 
         self.nPosSample,self.nNegSample = train_loss_config['nPosSample'],train_loss_config['nNegSample'] # 1, 5
-        self.neighbor_file = h5py.File(join(image_folder, neighbors_suffix), "r")
-        self.__prepare_data(image_folder)
+        self.__prepare_data(image_folder, neighbors_suffix)
 
 
     def __getitem__(self, index):
@@ -88,7 +88,6 @@ class TestDataset(Dataset):
 
         locations = np.array(locations)
         locations = torch.tensor(locations)
-        assert locations.shape[0] == 1 + self.nPosSample + self.nNegSample
 
         return [images_high, images_low, locations]
         # Shape: [(7, 1, chnl, height, with), (7, 1, ..., ..., ...), (7, 2)]
@@ -96,23 +95,27 @@ class TestDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def __prepare_data(self, image_folder):
-        self.data = []
+    def __prepare_data(self, image_folder, neighbors_suffix):
+        self.data, neighbor_file = [], None if neighbors_suffix is None else h5py.File(join(image_folder, neighbors_suffix), "r")
 
         raw_folder = join(image_folder, 'raw')
         image_list=listdir(raw_folder)
         self.image_coordinates = read_coordinates(image_list)
 
         for image in image_list:
-            if image in self.neighbor_file:
+            if neighbor_file is None or image in neighbor_file:
                 image_high_path=join(image_folder, 'raw', image)
                 image_low_path=join(image_folder, self.resolution, image)
+
+                if neighbor_file is None:
+                    self.data.append([[image_high_path, [], []], [image_low_path, [], []]])
+                    continue
                 
                 positives_high,negatives_high=[],[]
                 positives_low,negatives_low=[],[]
-
-                positives_pool=self.neighbor_file[image]['positives'][:] #(20,)
-                negatives_pool=self.neighbor_file[image]['negtives'][:] #(100,)
+                
+                positives_pool=neighbor_file[image]['positives'][:] #(20,)
+                negatives_pool=neighbor_file[image]['negtives'][:] #(100,)
 
                 ind=0
                 while len(positives_high) < self.nPosSample:
@@ -141,3 +144,5 @@ class TestDataset(Dataset):
                         break
                 if len(positives_high)==self.nPosSample and len(negatives_high)==self.nNegSample:
                     self.data.append([[image_high_path,positives_high,negatives_high],[image_low_path,positives_low,negatives_low]])
+        if neighbor_file is not None:
+            neighbor_file.close()
