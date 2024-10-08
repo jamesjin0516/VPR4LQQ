@@ -13,8 +13,21 @@ from tqdm import tqdm
 from tools.GoogleSheet import GoogleSheet
 
 
+# !!!!!!! DO NOT MODIFY DATASET LISTS !!!!!!!    (order determines Google Sheet write location)
+SMALL_DATASETS = ["st_lucia", "amstertime", "tum_lsi", "sped"]    
+MEDIUM_DATASETS = ["msls", "Nordland", "GangnamStation", "nyc_indoor"]
+LARGE_DATASETS = ["tokyo247", "eynsham", "svox"]
+
 SHEET_START_COL = "C"
 SHEET_START_ROW = 3
+
+
+def get_data_index(data_name):
+    if data_name in SMALL_DATASETS:
+        return SMALL_DATASETS.index(data_name)
+    if data_name in MEDIUM_DATASETS:
+        return len(SMALL_DATASETS) + MEDIUM_DATASETS.index(data_name)
+    return len(SMALL_DATASETS) + len(MEDIUM_DATASETS) + LARGE_DATASETS.index(data_name)
 
 
 def global_descriptors_paths(data_conf, data_folders, train_conf, models_to_test):
@@ -53,7 +66,6 @@ def load_all_descriptors(hfile_path, image_folder):
     return descriptors, locations
 
 
-# Evaluation code from https://github.com/gmberton/deep-visual-geo-localization-benchmark
 def calculate_recall(database_features, queries_features, database_utm, query_utm, recall_values, threshold):
     # Find soft_positives_per_query, which are within val_positive_dist_threshold (deafult 25 meters)
     knn = NearestNeighbors(n_jobs=-1)
@@ -131,17 +143,56 @@ def main(configs, data_info):
     test_vpr(root, configs['test_data'], data_folders, configs['vpr'], configs['train_conf'], configs["model_IO"], configs["sheet_col_offset"])
 
 
+def update_config_with_args(args, config):
+    if args.test_set is not None:
+        config["test_data"]["name"] = args.test_set
+    if args.config_num is not None:
+        config["test_data"]["test_res"] = "raw" if args.config_num == 1 else "90%"
+        config["test_data"]["use_trained_descs"] = args.config_num > 2
+        config["train_conf"]["finetuned"] = args.config_num == 3
+        if args.config_num > 3:
+            loss_combs = [(True, True, True), (True, True, False), (True, False, True), (True, False, False), (False, True, True), (False, True, False), (False, False, True)]
+            for enabled, loss_type in zip(loss_combs[args.config_num - 4], config["train_conf"]["loss"]):
+                config["train_conf"]["loss"][loss_type] = enabled
+        config["sheet_col_offset"] = args.config_num - 1
+    if args.models_to_test is not None:
+        models = {1: "NetVlad", 2: "MixVPR", 3: "AnyLoc", 4: "DinoV2Salad", 5: "CricaVPR"}
+        for model_num, model_name in models.items():
+            config["vpr"]["global_extractor"][model_name]["use"] = model_num in args.models_to_test
+
+
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     parser.add_argument("--test_set", type=str, help="Name of dataset to use")
+    parser.add_argument("--dset-group", type=int, help="If set, loop over 1 of 3 predefined dataset groups (1: small; 2: medium; 3: large)")
+    parser.add_argument("--dset-sub-ind", type=int, help="If --dset-group is specified, further choose a specific dataset (for slurm array job)")
+    parser.add_argument("--config-num", type=int, help="1: pretrained raw; 2: pretrained low; 3: finetuned; 4-10: loss combinations 1-7")
+    parser.add_argument("--models-to-test", nargs="+", type=int, help="Optionally specify indicies of models tested, otherwise deduce from config file")
     args = parser.parse_args()
 
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-    if args.test_set is not None:
-        config["test_data"]["name"] = args.test_set
-    main(config, data_info)
+    if args.dset_group is not None and args.test_set is None:
+        datasets = SMALL_DATASETS if args.dset_group == 1 else (MEDIUM_DATASETS if args.dset_group == 2 else LARGE_DATASETS)
+        if args.dset_sub_ind is not None and args.dset_sub_ind != -1:
+            update_config_with_args(args, config)
+            config["test_data"]["name"] = datasets[args.dset_sub_ind]
+            main(config, data_info)
+        else:
+            for dataset in datasets:
+                with open(args.config, 'r') as f:
+                    config = yaml.safe_load(f)
+                update_config_with_args(args, config)
+                config["test_data"]["name"] = dataset
+                try:
+                    main(config, data_info)
+                except Exception as e:
+                    print(f"!!!!!! {dataset} testing failed")
+                    print(e)
+    else:
+        update_config_with_args(args, config)
+        main(config, data_info)

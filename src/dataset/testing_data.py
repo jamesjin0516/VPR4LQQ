@@ -14,6 +14,12 @@ from feature.Global_Extractors import GlobalExtractors
 import argparse
 import yaml
 import random
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
+SMALL_DATASETS = ["st_lucia", "amstertime", "tum_lsi", "sped"]
+MEDIUM_DATASETS = ["msls", "Nordland", "GangnamStation", "nyc_indoor"]
+LARGE_DATASETS = ["tokyo247", "eynsham", "svox"]
 
 
 # Function to define input transformations for images
@@ -264,6 +270,20 @@ def main(configs, data_info, save_dir):
     for arg in arguments:
         extract_descriptors(*arg, configs["eval_batch"], save_dir, configs["test_data"]["test_res"])
 
+
+def update_config_with_args(args, configs):
+    if args.test_set is not None:
+        configs["test_data"]["name"] = args.test_set
+    if args.config_num is not None:
+        configs["test_data"]["test_res"] = "raw" if args.config_num == 1 else "90%"
+        configs["test_data"]["use_trained_descs"] = args.config_num > 2
+        configs["train_conf"]["finetuned"] = args.config_num == 3
+        if args.config_num > 3:
+            loss_combs = [(True, True, True), (True, True, False), (True, False, True), (True, False, False), (False, True, True), (False, True, False), (False, False, True)]
+            for enabled, loss_type in zip(loss_combs[args.config_num - 4], configs["train_conf"]["loss"]):
+                configs["train_conf"]["loss"][loss_type] = enabled
+
+
 # Check if the script is being run directly and, if so, execute the main function
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -272,19 +292,20 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', type=str, default='../configs/test_trained_model.yaml')
     parser.add_argument("-d", "--data_info", type=str, default="../configs/testing_data.yaml")
     parser.add_argument("--test_set", type=str, help="Name of dataset to use")
-    parser.add_argument("-l", "--loss-num", type=int, help="The loss combination to use (index [1-7] for the permutations of the 3 losses)")
+    parser.add_argument("--dset-group", type=int, help="If set, loop over 1 of 3 predefined dataset groups (1: small; 2: medium; 3: large)")
+    parser.add_argument("--dset-sub-ind", type=int, help="If --dset-group is specified, further choose a specific dataset (for slurm array job)")
+    parser.add_argument("--config-num", type=int, help="1: pretrained raw; 2: pretrained low; 3: finetuned; 4-10: loss combinations 1-7")
+    parser.add_argument("--model-num", type=int, help="The index of the VPR model to use, 1 - 5")
     args = parser.parse_args()
+    models = {0: "NetVlad", 1: "MixVPR", 2: "AnyLoc", 3: "DinoV2Salad", 4: "CricaVPR"}
+    if args.model_num is not None:
+        if args.model_num != 5:
+            args.config = splitext(args.config)[0] + f"_{models[args.model_num - 1]}.yaml"
     with open(args.config, "r") as f:
         configs = yaml.safe_load(f)
     with open(args.data_info, "r") as d_locs_file:
         data_info = yaml.safe_load(d_locs_file)
-    if args.test_set is not None:
-        configs["test_data"]["name"] = args.test_set
-    # Allows for choosing 1 combination of the 3 available losses through specifying an integer
-    if args.loss_num is not None:
-        loss_combs = [(True, True, True), (True, True, False), (True, False, True), (True, False, False), (False, True, True), (False, True, False), (False, False, True)]
-        for enabled, loss_type in zip(loss_combs[args.loss_num - 1], configs["train_conf"]["loss"]):
-            configs["train_conf"]["loss"][loss_type] = enabled
+    update_config_with_args(args, configs)
     
     # For finding model weights / saving computed descriptors, assemble directory names according to training configurations
     train_conf = configs["train_conf"]
@@ -303,5 +324,18 @@ if __name__ == '__main__':
         save_dir = join("precomputed_descriptors", "pretrained")
     global_extractors = GlobalExtractors(configs["root"], configs["vpr"]["global_extractor"], pipeline=configs["test_data"]["use_trained_descs"] or test_finetuned,
                                          data_parallel=configs["train_conf"]["multiGPU"])
-    
-    main(configs, data_info, save_dir)
+    if args.dset_group is not None:
+        datasets = SMALL_DATASETS if args.dset_group == 1 else (MEDIUM_DATASETS if args.dset_group == 2 else LARGE_DATASETS)
+        if args.dset_sub_ind is not None and args.dset_sub_ind != -1:
+            configs["test_data"]["name"] = datasets[args.dset_sub_ind]
+            main(configs, data_info, save_dir)
+        else:
+            for dataset in datasets:
+                configs["test_data"]["name"] = dataset
+                try:
+                    main(configs, data_info, save_dir)
+                except Exception as e:
+                    print(f"!!!!!! {dataset} extraction failed")
+                    print(e.with_traceback())
+    else:
+        main(configs, data_info, save_dir)

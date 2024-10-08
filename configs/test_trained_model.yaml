@@ -1,6 +1,6 @@
 root: '/mnt/data/VPR4LQQ'
 eval_batch: 100
-sheet_col_offset: 1
+sheet_col_offset: 1    # this, test_res, use_trained_descs, finetuned, and losses could be set automatically through config_num argument
 
 
 model_IO:
