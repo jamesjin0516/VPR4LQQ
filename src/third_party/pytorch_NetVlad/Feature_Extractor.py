@@ -6,6 +6,17 @@ import torch
 import torchvision.models as models
 import torch.nn as nn
 
+
+# Code from https://github.com/jacobgil/vit-explain/
+def show_mask_on_image(img, mask):
+    img = np.float32(img) / 255
+    heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
+    heatmap = np.float32(heatmap) / 255
+    cam = 0.7 * heatmap + np.float32(img)
+    cam = cam / np.max(cam)
+    return np.uint8(255 * cam)
+
+
 def input_transform():
     return transforms.Compose([
         transforms.ToTensor(),
@@ -103,6 +114,25 @@ class NetVladFeatureExtractor:
         image_encoding = self.model.module.encoder(images) if self.is_parallel else self.model.encoder(images)
         vlad_encoding = self.model.module.pool(image_encoding) if self.is_parallel else self.model.pool(image_encoding)
         return image_encoding, vlad_encoding
+    
+    def generate_heatmap(self, image, input_tensor, target_class=None):
+        # Convert and move image to device
+        input_tensor = input_tensor.to(self.device)
+
+        features=self.model.encoder(input_tensor)
+        N,C,h,w=features.shape
+        vlad, soft_assignments =self.model.pool(features,True)
+        features_flatten = features.view(N, C, -1)
+
+        for c in range(C):
+            features_flatten[:,c,:]=torch.sum(features_flatten[:,c,:]*soft_assignments,dim=1)
+
+        cam = torch.norm(features_flatten,dim=1).reshape(h, w).detach().cpu().numpy()
+        cam = cam / np.max(cam)
+        mask = cv2.resize(cam, (image.width, image.height))
+        heatmap = show_mask_on_image(np.array(image)[:, :, ::-1], mask)
+        del input_tensor
+        return heatmap
     
     def set_train(self, is_train):
         self.model.train(is_train)
